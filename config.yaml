@@ -1,0 +1,17 @@
+# Countries to search (LinkedIn location names)
+countries:
+  - Luxembourg
+  - Germany
+  - Netherlands
+  - France
+
+# Keywords to filter by. Empty string = any internship.
+# Add more entries to run several searches, e.g. ["software", "data"].
+keywords:
+  - ""
+
+# Only jobs posted in this many seconds (86400 = last 24 hours)
+posted_within_seconds: 86400
+
+# Safety cap on results per country per search (LinkedIn serves at most ~1000)
+max_results_per_country: 1000
