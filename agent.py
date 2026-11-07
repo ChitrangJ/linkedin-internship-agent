@@ -25,6 +25,7 @@ import sys
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -61,7 +62,7 @@ class Job:
     country: str
 
 
-def fetch_page(session: requests.Session, params: dict, retries: int = 4) -> str | None:
+def fetch_page(session: requests.Session, params: dict, retries: int = 6) -> str | None:
     for attempt in range(retries):
         try:
             r = session.get(SEARCH_URL, params=params, headers=HEADERS, timeout=30)
@@ -72,10 +73,13 @@ def fetch_page(session: requests.Session, params: dict, retries: int = 4) -> str
             return r.text
         if r is not None and r.status_code in (400, 404):
             return None  # past the last page
-        wait = (2 ** attempt) * 5 + random.uniform(0, 3)
         code = r.status_code if r is not None else "n/a"
-        print(f"  HTTP {code}, retrying in {wait:.0f}s", file=sys.stderr)
+        # Rate limited: back off much longer so the IP cools down.
+        base = 20 if code == 429 else 5
+        wait = min(base * (2 ** attempt), 180) + random.uniform(0, 5)
+        print(f"  HTTP {code} at start={params.get('start')}, retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
+    print(f"  gave up on start={params.get('start')} after {retries} tries", file=sys.stderr)
     return None
 
 
@@ -141,7 +145,7 @@ def search_country(session, country, keyword, seconds, cap) -> list[Job]:
             if new == 0 and len(jobs) < PAGE_SIZE:
                 break
             start += PAGE_SIZE
-            time.sleep(random.uniform(1.5, 3.5))  # be polite
+            time.sleep(random.uniform(3, 6))  # be polite
     return list(found.values())
 
 
@@ -171,28 +175,79 @@ def build_email_html(by_country: dict[str, list[Job]], date_str: str) -> str:
     return "\n".join(parts)
 
 
-def send_email(subject: str, body_html: str) -> None:
-    user = os.environ["SMTP_USER"]
-    password = os.environ["SMTP_PASSWORD"]
-    to = [a.strip() for a in os.environ.get("EMAIL_TO", user).split(",") if a.strip()]
+def _smtp_credentials() -> tuple[str, str, list[str]]:
+    user = "".join(os.environ.get("SMTP_USER", "").split())
+    # App Passwords are shown as "abcd efgh ijkl mnop"; copying can also pick up
+    # non-breaking spaces or newlines. Remove all whitespace.
+    password = "".join(os.environ.get("SMTP_PASSWORD", "").split())
+    to_raw = os.environ.get("EMAIL_TO", "").strip() or user
+    to = [a.strip() for a in to_raw.split(",") if a.strip()]
+
+    problems = []
+    if not user:
+        problems.append("SMTP_USER secret is empty or missing")
+    elif "@" not in user:
+        problems.append("SMTP_USER doesn't look like an email address")
+    if not password:
+        problems.append("SMTP_PASSWORD secret is empty or missing")
+    elif not password.isascii():
+        problems.append("SMTP_PASSWORD contains non-ASCII characters (bad copy/paste?)")
+    elif "gmail" in user.lower() and len(password) != 16:
+        problems.append(
+            f"SMTP_PASSWORD is {len(password)} characters; a Gmail App Password is 16 letters"
+        )
+    if problems:
+        raise SystemExit("Email config problem:\n  - " + "\n  - ".join(problems))
+    return user, password, to
+
+
+def send_email(subject: str, body_html: str, attachment: Path | None = None) -> None:
+    user, password, to = _smtp_credentials()
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "465"))
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = user
     msg["To"] = ", ".join(to)
     msg.attach(MIMEText(body_html, "html", "utf-8"))
+    if attachment and attachment.exists():
+        part = MIMEApplication(attachment.read_bytes(), Name=attachment.name)
+        part["Content-Disposition"] = f'attachment; filename="{attachment.name}"'
+        msg.attach(part)
 
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port) as s:
+    def via_ssl(p):
+        with smtplib.SMTP_SSL(host, p, timeout=60) as s:
             s.login(user, password)
             s.sendmail(user, to, msg.as_string())
-    else:
-        with smtplib.SMTP(host, port) as s:
+
+    def via_starttls(p):
+        with smtplib.SMTP(host, p, timeout=60) as s:
+            s.ehlo()
             s.starttls()
+            s.ehlo()
             s.login(user, password)
             s.sendmail(user, to, msg.as_string())
+
+    attempts = [(via_ssl, port)] if port == 465 else [(via_starttls, port)]
+    if host == "smtp.gmail.com":
+        attempts.append((via_starttls, 587) if port == 465 else (via_ssl, 465))
+
+    last = None
+    for fn, p in attempts:
+        try:
+            fn(p)
+            return
+        except smtplib.SMTPAuthenticationError as e:
+            raise SystemExit(
+                f"Gmail rejected the login for {user}: {e.smtp_code} {e.smtp_error!r}.\n"
+                "Use a 16-letter App Password (myaccount.google.com/apppasswords) for "
+                "this same Gmail account, with 2-Step Verification on."
+            )
+        except (smtplib.SMTPException, OSError) as e:
+            print(f"  SMTP via port {p} failed: {type(e).__name__}: {e}", file=sys.stderr)
+            last = e
+    raise SystemExit(f"Could not send email: {last}")
 
 
 def main() -> int:
@@ -200,7 +255,15 @@ def main() -> int:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--out", default="output", help="folder for CSV + HTML results")
     ap.add_argument("--no-email", action="store_true", help="skip sending email")
+    ap.add_argument("--test-email", action="store_true",
+                    help="only send a short test email (no LinkedIn search)")
     args = ap.parse_args()
+
+    if args.test_email:
+        send_email("Internship agent: test email",
+                   "<p>Your LinkedIn internship agent can send email. 🎉</p>")
+        print("Test email sent.")
+        return 0
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     countries = cfg["countries"]
@@ -224,7 +287,8 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     all_jobs = [j for jobs in by_country.values() for j in jobs]
-    with open(out / f"internships-{date_str}.csv", "w", newline="", encoding="utf-8") as f:
+    csv_path = out / f"internships-{date_str}.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(Job.__dataclass_fields__))
         w.writeheader()
         w.writerows(asdict(j) for j in all_jobs)
@@ -233,7 +297,7 @@ def main() -> int:
     print(f"Saved {len(all_jobs)} jobs to {out}/")
 
     if not args.no_email:
-        send_email(f"{len(all_jobs)} new internships ({date_str})", body)
+        send_email(f"{len(all_jobs)} new internships ({date_str})", body, attachment=csv_path)
         print("Email sent.")
 
     if not all_jobs:
