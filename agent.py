@@ -489,7 +489,8 @@ def main() -> int:
     print(f"Saved {len(all_jobs)} jobs to {out}/  stats={stats}")
 
     if not args.no_email:
-        send_email(f"{len(all_jobs)} new internships & part-time roles ({when})", body,
+        prefix = f"[Preview: {args.only}] " if args.only else ""
+        send_email(f"{prefix}{len(all_jobs)} new internships & part-time roles ({when})", body,
                    attachment=csv_path)
         print("Email sent.")
     return 0

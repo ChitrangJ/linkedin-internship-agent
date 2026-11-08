@@ -9,6 +9,10 @@ on:
         description: "Only send a test email (skip the LinkedIn search)"
         type: boolean
         default: false
+      only:
+        description: "Preview: only these locations, comma separated (e.g. Paris, Lyon). Empty = all"
+        type: string
+        default: ""
 
 jobs:
   run:
@@ -26,7 +30,8 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           PYTHONUNBUFFERED: "1"
-        run: python agent.py ${{ inputs.test_email && '--test-email' || '' }}
+          ONLY: ${{ inputs.only }}
+        run: python agent.py ${{ inputs.test_email && '--test-email' || '' }} ${{ inputs.only && '--only "$ONLY"' || '' }}
       - uses: actions/upload-artifact@v4
         if: always() && !inputs.test_email
         with:
