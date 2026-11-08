@@ -1,4 +1,4 @@
-"""Fetch LinkedIn internships posted in the last 24h for configured countries
+"""Fetch LinkedIn internships posted in the last 24h for configured locations
 and email a digest.
 
 Uses LinkedIn's public (logged-out) job search endpoint. No LinkedIn account
@@ -59,7 +59,7 @@ class Job:
     location: str
     posted: str
     url: str
-    country: str
+    search: str
 
 
 def fetch_page(session: requests.Session, params: dict, retries: int = 6) -> str | None:
@@ -113,13 +113,13 @@ def parse_cards(page_html: str, country: str) -> list[Job]:
                 location=text(r"job-search-card__location"),
                 posted=posted,
                 url=url or f"https://www.linkedin.com/jobs/view/{m.group(1)}",
-                country=country,
+                search=country,
             )
         )
     return jobs
 
 
-def search_country(session, country, keyword, seconds, cap) -> list[Job]:
+def search_country(session, country, keyword, seconds, cap, remote_only=False, label=None) -> list[Job]:
     found: dict[str, Job] = {}
     for filt in INTERNSHIP_FILTERS:
         start = 0
@@ -131,10 +131,12 @@ def search_country(session, country, keyword, seconds, cap) -> list[Job]:
                 "start": start,
                 **filt,
             }
+            if remote_only:
+                params["f_WT"] = "2"  # LinkedIn "Remote" workplace filter
             page = fetch_page(session, params)
             if not page:
                 break
-            jobs = parse_cards(page, country)
+            jobs = parse_cards(page, label or country)
             if not jobs:
                 break
             new = 0
@@ -266,20 +268,26 @@ def main() -> int:
         return 0
 
     cfg = yaml.safe_load(Path(args.config).read_text())
-    countries = cfg["countries"]
+    searches = cfg.get("searches") or [{"location": c} for c in cfg.get("countries", [])]
     keywords = cfg.get("keywords") or [""]
     seconds = int(cfg.get("posted_within_seconds", 86400))
     cap = int(cfg.get("max_results_per_country", 1000))
 
     session = requests.Session()
     by_country: dict[str, list[Job]] = {}
-    for country in countries:
+    seen: set[str] = set()  # list each job once, under the first search that found it
+    for s in searches:
+        loc = s["location"]
+        remote = bool(s.get("remote_only", False))
+        label = f"{loc} (remote)" if remote else loc
         merged: dict[str, Job] = {}
         for kw in keywords:
-            print(f"Searching {country!r} keyword={kw!r} ...")
-            for j in search_country(session, country, kw, seconds, cap):
-                merged.setdefault(j.job_id, j)
-        by_country[country] = list(merged.values())
+            print(f"Searching {label!r} keyword={kw!r} ...")
+            for j in search_country(session, loc, kw, seconds, cap, remote, label):
+                if j.job_id not in seen:
+                    seen.add(j.job_id)
+                    merged[j.job_id] = j
+        by_country[label] = list(merged.values())
         print(f"  -> {len(merged)} internships")
 
     now = datetime.now(timezone.utc)

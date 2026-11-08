@@ -1,9 +1,15 @@
-# Countries to search (LinkedIn location names)
-countries:
-  - Luxembourg
-  - Germany
-  - Netherlands
-  - France
+# Each search = one LinkedIn location (country or city).
+# remote_only: true  -> only internships marked "Remote" on LinkedIn
+# A job found by several searches is listed only once (under the first search).
+searches:
+  - location: Germany
+    remote_only: true
+  - location: Berlin
+  - location: Paris
+  - location: Lyon
+  - location: Netherlands
+  - location: Luxembourg
+  - location: Switzerland
 
 # Keywords to filter by. Empty string = any internship.
 # Add more entries to run several searches, e.g. ["software", "data"].
@@ -13,5 +19,5 @@ keywords:
 # Only jobs posted in this many seconds (86400 = last 24 hours)
 posted_within_seconds: 86400
 
-# Safety cap on results per country per search (LinkedIn serves at most ~1000)
+# Safety cap on results per search (LinkedIn serves at most ~1000)
 max_results_per_country: 1000
