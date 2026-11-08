@@ -1,8 +1,15 @@
-"""Fetch LinkedIn internships posted in the last 24h for configured locations
-and email a digest.
+"""Fetch recent LinkedIn internship / part-time / contract roles in chosen
+domains and locations, filter them, and email a digest.
 
-Uses LinkedIn's public (logged-out) job search endpoint. No LinkedIn account
-or API key is needed.
+Uses LinkedIn's public (logged-out) job pages. No LinkedIn account or API key.
+LinkedIn ignores its experience-level, job-type and remote filters for
+logged-out searches, so this script checks every candidate job itself:
+
+  1. Search: (role words) AND (domain words), per location and domain.
+  2. Title check: must match a domain; senior / non-office titles dropped.
+  3. Job page: LinkedIn "Employment type" must be an allowed type.
+  4. Description: drop jobs requiring >= max_years_experience years.
+  5. remote_only locations: title/location/description must say remote.
 
 Environment variables for email (skip with --no-email):
   SMTP_USER      sender address, e.g. you@gmail.com
@@ -23,7 +30,7 @@ import re
 import smtplib
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -35,7 +42,7 @@ import yaml
 from bs4 import BeautifulSoup
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-PAGE_SIZE = 25
+DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,12 +50,10 @@ HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-# Two ways LinkedIn marks internships; we query both and merge.
-INTERNSHIP_FILTERS = [
-    {"f_E": "1"},   # Experience level = Internship
-    {"f_JT": "I"},  # Job type = Internship
-]
+INTERN_TITLE_RE = re.compile(
+    r"intern|stage|stagiaire|praktik|werkstudent|working student|stagiair|alternan|trainee",
+    re.I,
+)
 
 
 @dataclass
@@ -60,131 +65,234 @@ class Job:
     posted: str
     url: str
     search: str
+    domains: list[str] = field(default_factory=list)
+    employment_type: str = ""
+    seniority: str = ""
+    min_years: int | None = None
+    remote: bool = False
 
 
-def fetch_page(session: requests.Session, params: dict, retries: int = 6) -> str | None:
+# --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
+def http_get(session: requests.Session, url: str, params: dict | None = None,
+             retries: int = 6) -> str | None:
     for attempt in range(retries):
         try:
-            r = session.get(SEARCH_URL, params=params, headers=HEADERS, timeout=30)
+            r = session.get(url, params=params, headers=HEADERS, timeout=30)
         except requests.RequestException as e:
             print(f"  network error: {e}", file=sys.stderr)
             r = None
         if r is not None and r.status_code == 200:
             return r.text
-        if r is not None and r.status_code in (400, 404):
-            return None  # past the last page
+        if r is not None and r.status_code in (400, 404, 410):
+            return None
         code = r.status_code if r is not None else "n/a"
-        # Rate limited: back off much longer so the IP cools down.
-        base = 20 if code == 429 else 5
-        wait = min(base * (2 ** attempt), 180) + random.uniform(0, 5)
-        print(f"  HTTP {code} at start={params.get('start')}, retrying in {wait:.0f}s", file=sys.stderr)
+        base = 10 if code == 429 else 5
+        wait = min(base * (2 ** attempt), 180) + random.uniform(0, 4)
+        print(f"  HTTP {code}, retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
-    print(f"  gave up on start={params.get('start')} after {retries} tries", file=sys.stderr)
+    print(f"  gave up on {url} {params or ''}", file=sys.stderr)
     return None
 
 
-def parse_cards(page_html: str, country: str) -> list[Job]:
+# --------------------------------------------------------------------------
+# Parsing
+# --------------------------------------------------------------------------
+def _txt(el) -> str:
+    return " ".join(el.get_text(" ").split()) if el else ""
+
+
+def parse_cards(page_html: str, search_label: str) -> list[Job]:
     soup = BeautifulSoup(page_html, "html.parser")
     jobs = []
     for li in soup.find_all("li"):
-        card = li.find(attrs={"data-entity-urn": True}) or li.find(
-            class_=re.compile(r"base-card|job-search-card")
-        )
-        if card is None:
-            continue
-        urn = card.get("data-entity-urn", "")
+        card = li.find(attrs={"data-entity-urn": True})
         link = li.find("a", class_=re.compile(r"base-card__full-link")) or li.find("a", href=True)
         url = link["href"].split("?")[0] if link else ""
-        m = re.search(r"(\d{6,})", urn) or re.search(r"-(\d{6,})", url)
+        urn = card.get("data-entity-urn", "") if card else ""
+        m = re.search(r"(\d{6,})", urn) or re.search(r"-(\d{6,})(?:$|/)", url)
         if not m:
             continue
-
-        def text(cls):
-            el = li.find(class_=re.compile(cls))
-            return " ".join(el.get_text().split()) if el else ""
-
         time_el = li.find("time")
-        posted = (time_el.get("datetime") or time_el.get_text(strip=True)) if time_el else ""
-        jobs.append(
-            Job(
-                job_id=m.group(1),
-                title=text(r"base-search-card__title"),
-                company=text(r"base-search-card__subtitle"),
-                location=text(r"job-search-card__location"),
-                posted=posted,
-                url=url or f"https://www.linkedin.com/jobs/view/{m.group(1)}",
-                search=country,
-            )
-        )
+        jobs.append(Job(
+            job_id=m.group(1),
+            title=_txt(li.find(class_=re.compile(r"base-search-card__title"))),
+            company=_txt(li.find(class_=re.compile(r"base-search-card__subtitle"))),
+            location=_txt(li.find(class_=re.compile(r"job-search-card__location"))),
+            posted=(time_el.get("datetime") or _txt(time_el)) if time_el else "",
+            url=url or f"https://www.linkedin.com/jobs/view/{m.group(1)}",
+            search=search_label,
+        ))
     return jobs
 
 
-def search_country(session, country, keyword, seconds, cap, remote_only=False, label=None) -> list[Job]:
+def parse_detail(page_html: str) -> tuple[dict[str, str], str]:
+    """Return ({criterion: value}, description text)."""
+    soup = BeautifulSoup(page_html, "html.parser")
+    criteria = {}
+    for item in soup.select(".description__job-criteria-item"):
+        k, v = item.find("h3"), item.find("span")
+        if k and v:
+            criteria[_txt(k)] = _txt(v)
+    desc = soup.select_one(".show-more-less-html__markup") or soup.select_one(".description__text")
+    return criteria, _txt(desc)
+
+
+# --------------------------------------------------------------------------
+# Filters
+# --------------------------------------------------------------------------
+def term_regex(terms: list[str]) -> re.Pattern:
+    """Short terms (<=3 chars) must be whole words; longer ones match anywhere."""
+    parts = []
+    for t in terms:
+        t = t.strip().lower()
+        if not t:
+            continue
+        e = re.escape(t)
+        parts.append(rf"(?<![a-z0-9]){e}(?![a-z0-9])" if len(t) <= 3 else e)
+    return re.compile("|".join(parts) or r"(?!x)x", re.I)
+
+
+NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15,
+    "un": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "sept": 7, "huit": 8, "dix": 10,
+    "ein": 1, "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+    "acht": 8, "zehn": 10,
+    "een": 1, "twee": 2, "drie": 3, "vijf": 5, "zes": 6, "zeven": 7, "tien": 10,
+}
+_NUMW_RE = re.compile(r"\b(" + "|".join(sorted(NUM_WORDS, key=len, reverse=True)) + r")\b")
+_YEARS_RE = re.compile(
+    r"(?<![\d+])(\d{1,2})\s*(?:\+|plus)?\s*"
+    r"(?:(?:-|–|—|to|à|a|bis|tot|until)\s*(\d{1,2})\s*\+?\s*)?"
+    r"(?:years?|yrs?|ans|années|année|jahre|jahren|jahr|jaar|jaren)\b"
+)
+_EXP_WORDS = re.compile(
+    r"experience|expérience|experiencia|esperienza|erfahrung|ervaring|"
+    r"track record|background in|working in|work experience|in a similar|in a .{0,20}role"
+)
+_MIN_WORDS = re.compile(
+    r"at least|minimum|min\.|mindestens|au moins|minimaal|minstens"
+)
+
+
+def required_years(description: str) -> int | None:
+    """Smallest 'N years of experience' requirement mentioned, or None.
+
+    For a range like '3-5 years' the lower bound counts. Several mentions →
+    the largest lower bound (the job's strictest requirement).
+    """
+    text = description.lower()
+    text = text.replace("ten minste", "minimaal")
+    text = re.sub(r"bac\s*\+\s*\d", " ", text)  # French degree level, not years
+    text = _NUMW_RE.sub(lambda m: str(NUM_WORDS[m.group(1)]), text)
+    found = []
+    for m in _YEARS_RE.finditer(text):
+        lo = int(m.group(1))
+        if lo == 0 or lo > 25:
+            continue
+        before = text[max(0, m.start() - 60): m.start()]
+        before = re.split(r"[.;!?\n•]", before)[-1]           # same clause only
+        after = re.split(r"[.;!?\n•]", text[m.end(): m.end() + 70])[0]
+        exp_before = re.search(
+            r"(experience|expérience|erfahrung|berufserfahrung|ervaring)\s*"
+            r":?\s*(of|von|de|d'|van)?\s*(at least|minimum|min\.|mindestens|au moins|minimaal|minstens)?\s*$",
+            before)
+        if _EXP_WORDS.search(after) or exp_before or _MIN_WORDS.search(before[-25:]):
+            if re.search(r"years? old|ans? et plus|jahre alt|jaar oud|founded|gegründet|fondée|since|seit|depuis", before[-25:] + after[:25]):
+                continue
+            found.append(lo)
+    return max(found) if found else None
+
+
+def is_remote(job: Job, description: str, remote_re: re.Pattern) -> bool:
+    head = f"{job.title} {job.location}".lower()
+    if re.search(r"remote|home ?office|homeoffice|télétravail|thuiswerk", head):
+        return True
+    return bool(remote_re.search(description.lower()))
+
+
+# --------------------------------------------------------------------------
+# Search
+# --------------------------------------------------------------------------
+def quote(term: str) -> str:
+    return f'"{term}"' if " " in term or "-" in term else term
+
+
+def build_query(role_terms: list[str], domain_terms: list[str], remote: bool) -> str:
+    q = "(" + " OR ".join(quote(t) for t in role_terms) + ") AND (" + \
+        " OR ".join(quote(t) for t in domain_terms) + ")"
+    if remote:
+        q += ' AND (remote OR homeoffice OR "home office" OR ortsunabhängig)'
+    return q
+
+
+def search(session, location: str, keywords: str, seconds: int, max_pages: int,
+           label: str) -> list[Job]:
     found: dict[str, Job] = {}
-    for filt in INTERNSHIP_FILTERS:
-        start = 0
-        while start < cap:
-            params = {
-                "keywords": keyword,
-                "location": country,
-                "f_TPR": f"r{seconds}",
-                "start": start,
-                **filt,
-            }
-            if remote_only:
-                params["f_WT"] = "2"  # LinkedIn "Remote" workplace filter
-            page = fetch_page(session, params)
-            if not page:
-                break
-            jobs = parse_cards(page, label or country)
-            if not jobs:
-                break
-            new = 0
-            for j in jobs:
-                if j.job_id not in found:
-                    found[j.job_id] = j
-                    new += 1
-            if new == 0 and len(jobs) < PAGE_SIZE:
-                break
-            start += PAGE_SIZE
-            time.sleep(random.uniform(3, 6))  # be polite
+    start = 0
+    for _ in range(max_pages):
+        page = http_get(session, SEARCH_URL, {
+            "keywords": keywords, "location": location,
+            "f_TPR": f"r{seconds}", "start": start,
+        })
+        if not page:
+            break
+        jobs = parse_cards(page, label)
+        if not jobs:
+            break
+        new = [j for j in jobs if j.job_id not in found]
+        for j in new:
+            found[j.job_id] = j
+        if not new:
+            break
+        start += len(jobs)  # LinkedIn returns ~10 per page
+        time.sleep(random.uniform(2, 4))
     return list(found.values())
 
 
-def build_email_html(by_country: dict[str, list[Job]], date_str: str) -> str:
-    total = sum(len(v) for v in by_country.values())
-    parts = [
-        "<div style='font-family:Arial,sans-serif;max-width:760px'>",
-        f"<h2>LinkedIn internships, last 24h ({date_str})</h2>",
-        f"<p><b>{total}</b> new postings: "
-        + ", ".join(f"{c} {len(j)}" for c, j in by_country.items())
-        + "</p>",
+# --------------------------------------------------------------------------
+# Email
+# --------------------------------------------------------------------------
+def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats: dict) -> str:
+    total = sum(len(v) for v in by_loc.values())
+    p = [
+        "<div style='font-family:Arial,sans-serif;max-width:780px'>",
+        f"<h2 style='margin-bottom:4px'>{total} internships / part-time / contract roles</h2>",
+        f"<p style='color:#555;margin-top:0'>Posted in the last {hours}h · {html.escape(when)}</p>",
+        "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in by_loc.items()) + "</p>",
     ]
-    for country, jobs in by_country.items():
-        parts.append(f"<h3 style='border-bottom:1px solid #ccc'>{html.escape(country)} ({len(jobs)})</h3>")
+    for loc, jobs in by_loc.items():
+        p.append(f"<h3 style='border-bottom:1px solid #ccc;padding-bottom:4px'>{html.escape(loc)} ({len(jobs)})</h3>")
         if not jobs:
-            parts.append("<p style='color:#777'>No new internships.</p>")
+            p.append("<p style='color:#777'>Nothing new.</p>")
             continue
-        parts.append("<ul style='padding-left:18px'>")
-        for j in sorted(jobs, key=lambda x: (x.company.lower(), x.title.lower())):
-            parts.append(
-                f"<li style='margin-bottom:6px'><a href='{html.escape(j.url)}'>{html.escape(j.title)}</a>"
-                f" &mdash; <b>{html.escape(j.company)}</b>"
-                f" <span style='color:#666'>· {html.escape(j.location)}</span></li>"
+        p.append("<ul style='padding-left:18px'>")
+        for j in sorted(jobs, key=lambda x: (x.domains[0] if x.domains else "", x.company.lower())):
+            tags = ", ".join(j.domains)
+            yrs = f" · {j.min_years}+ yrs" if j.min_years else ""
+            p.append(
+                f"<li style='margin-bottom:7px'><a href='{html.escape(j.url)}'><b>{html.escape(j.title)}</b></a><br>"
+                f"<span style='color:#333'>{html.escape(j.company)}</span>"
+                f"<span style='color:#666'> · {html.escape(j.location)} · {html.escape(j.employment_type)}"
+                f"{' · Remote' if j.remote else ''}{yrs} · <i>{html.escape(tags)}</i></span></li>"
             )
-        parts.append("</ul>")
-    parts.append("</div>")
-    return "\n".join(parts)
+        p.append("</ul>")
+    p.append(
+        "<p style='color:#888;font-size:12px'>Checked "
+        f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} wrong employment type, "
+        f"{stats.get('too_senior', 0)} needing {stats.get('max_years')}+ years, "
+        f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div>"
+    )
+    return "\n".join(p)
 
 
 def _smtp_credentials() -> tuple[str, str, list[str]]:
     user = "".join(os.environ.get("SMTP_USER", "").split())
-    # App Passwords are shown as "abcd efgh ijkl mnop"; copying can also pick up
-    # non-breaking spaces or newlines. Remove all whitespace.
     password = "".join(os.environ.get("SMTP_PASSWORD", "").split())
     to_raw = os.environ.get("EMAIL_TO", "").strip() or user
     to = [a.strip() for a in to_raw.split(",") if a.strip()]
-
     problems = []
     if not user:
         problems.append("SMTP_USER secret is empty or missing")
@@ -195,9 +303,7 @@ def _smtp_credentials() -> tuple[str, str, list[str]]:
     elif not password.isascii():
         problems.append("SMTP_PASSWORD contains non-ASCII characters (bad copy/paste?)")
     elif "gmail" in user.lower() and len(password) != 16:
-        problems.append(
-            f"SMTP_PASSWORD is {len(password)} characters; a Gmail App Password is 16 letters"
-        )
+        problems.append(f"SMTP_PASSWORD is {len(password)} characters; a Gmail App Password is 16 letters")
     if problems:
         raise SystemExit("Email config problem:\n  - " + "\n  - ".join(problems))
     return user, password, to
@@ -225,16 +331,13 @@ def send_email(subject: str, body_html: str, attachment: Path | None = None) -> 
 
     def via_starttls(p):
         with smtplib.SMTP(host, p, timeout=60) as s:
-            s.ehlo()
-            s.starttls()
-            s.ehlo()
+            s.ehlo(); s.starttls(); s.ehlo()
             s.login(user, password)
             s.sendmail(user, to, msg.as_string())
 
     attempts = [(via_ssl, port)] if port == 465 else [(via_starttls, port)]
     if host == "smtp.gmail.com":
         attempts.append((via_starttls, 587) if port == 465 else (via_ssl, 465))
-
     last = None
     for fn, p in attempts:
         try:
@@ -252,6 +355,9 @@ def send_email(subject: str, body_html: str, attachment: Path | None = None) -> 
     raise SystemExit(f"Could not send email: {last}")
 
 
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
@@ -259,6 +365,7 @@ def main() -> int:
     ap.add_argument("--no-email", action="store_true", help="skip sending email")
     ap.add_argument("--test-email", action="store_true",
                     help="only send a short test email (no LinkedIn search)")
+    ap.add_argument("--only", help="comma-separated locations to run (for testing)")
     args = ap.parse_args()
 
     if args.test_email:
@@ -267,49 +374,109 @@ def main() -> int:
         print("Test email sent.")
         return 0
 
-    cfg = yaml.safe_load(Path(args.config).read_text())
-    searches = cfg.get("searches") or [{"location": c} for c in cfg.get("countries", [])]
-    keywords = cfg.get("keywords") or [""]
-    seconds = int(cfg.get("posted_within_seconds", 86400))
-    cap = int(cfg.get("max_results_per_country", 1000))
+    cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    locations = cfg["locations"]
+    if args.only:
+        keep = {x.strip().lower() for x in args.only.split(",")}
+        locations = [l for l in locations if l["location"].lower() in keep]
+    seconds = int(cfg.get("posted_within_seconds", 43200))
+    allowed_types = {t.lower() for t in cfg.get("allowed_employment_types", ["Internship"])}
+    max_years = int(cfg.get("max_years_experience", 5))
+    role_terms = cfg["role_search_terms"]
+    domains = cfg["domains"]
+    domain_title_re = {name: term_regex(d["title"]) for name, d in domains.items()}
+    exclude_re = term_regex(cfg.get("exclude_title_terms", []))
+    remote_re = term_regex(cfg.get("remote_description_terms", []))
+    max_pages = int(cfg.get("max_pages_per_search", 30))
 
     session = requests.Session()
-    by_country: dict[str, list[Job]] = {}
-    seen: set[str] = set()  # list each job once, under the first search that found it
-    for s in searches:
-        loc = s["location"]
-        remote = bool(s.get("remote_only", False))
-        label = f"{loc} (remote)" if remote else loc
-        merged: dict[str, Job] = {}
-        for kw in keywords:
-            print(f"Searching {label!r} keyword={kw!r} ...")
-            for j in search_country(session, loc, kw, seconds, cap, remote, label):
-                if j.job_id not in seen:
-                    seen.add(j.job_id)
-                    merged[j.job_id] = j
-        by_country[label] = list(merged.values())
-        print(f"  -> {len(merged)} internships")
+    stats = {"candidates": 0, "wrong_type": 0, "too_senior": 0, "not_remote": 0,
+             "max_years": max_years}
+    seen: set[str] = set()
+    by_loc: dict[str, list[Job]] = {}
+
+    for loc_cfg in locations:
+        loc = loc_cfg["location"]
+        remote_only = bool(loc_cfg.get("remote_only", False))
+        label = f"{loc} (remote)" if remote_only else loc
+
+        # 1. search each domain, 2. title filter
+        candidates: dict[str, Job] = {}
+        for dname, d in domains.items():
+            q = build_query(role_terms, d["search"], remote_only)
+            results = search(session, loc, q, seconds, max_pages, label)
+            kept = 0
+            for j in results:
+                if j.job_id in seen:
+                    continue
+                if exclude_re.search(j.title):
+                    continue
+                tags = [n for n, rx in domain_title_re.items() if rx.search(j.title)]
+                if not tags:
+                    continue
+                if j.job_id in candidates:
+                    continue
+                j.domains = tags
+                candidates[j.job_id] = j
+                kept += 1
+            print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches", flush=True)
+
+        # 3-5. job page checks
+        accepted = []
+        for j in candidates.values():
+            seen.add(j.job_id)
+            stats["candidates"] += 1
+            page = http_get(session, DETAIL_URL.format(j.job_id))
+            time.sleep(random.uniform(1, 2.5))
+            if not page:
+                continue
+            criteria, desc = parse_detail(page)
+            j.employment_type = criteria.get("Employment type", "")
+            j.seniority = criteria.get("Seniority level", "")
+            etype = j.employment_type.lower()
+            if etype:
+                if etype not in allowed_types:
+                    stats["wrong_type"] += 1
+                    continue
+            elif INTERN_TITLE_RE.search(j.title) and "internship" in allowed_types:
+                j.employment_type = "Internship"
+            else:
+                stats["wrong_type"] += 1
+                continue
+            j.min_years = required_years(desc)
+            if j.min_years is not None and j.min_years >= max_years:
+                stats["too_senior"] += 1
+                continue
+            j.remote = is_remote(j, desc, remote_re)
+            if remote_only and not j.remote:
+                stats["not_remote"] += 1
+                continue
+            accepted.append(j)
+        by_loc[label] = accepted
+        print(f"[{label}] {len(candidates)} candidates -> {len(accepted)} kept", flush=True)
 
     now = datetime.now(timezone.utc)
-    date_str = now.strftime("%Y-%m-%d")
+    when = now.strftime("%Y-%m-%d %H:%M UTC")
+    stamp = now.strftime("%Y-%m-%d-%H%M")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    all_jobs = [j for jobs in by_country.values() for j in jobs]
-    csv_path = out / f"internships-{date_str}.csv"
+    all_jobs = [j for jobs in by_loc.values() for j in jobs]
+    csv_path = out / f"internships-{stamp}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(Job.__dataclass_fields__))
         w.writeheader()
-        w.writerows(asdict(j) for j in all_jobs)
-    body = build_email_html(by_country, date_str)
-    (out / f"internships-{date_str}.html").write_text(body, encoding="utf-8")
-    print(f"Saved {len(all_jobs)} jobs to {out}/")
+        for j in all_jobs:
+            row = asdict(j)
+            row["domains"] = "; ".join(j.domains)
+            w.writerow(row)
+    body = build_email_html(by_loc, when, round(seconds / 3600), stats)
+    (out / f"internships-{stamp}.html").write_text(body, encoding="utf-8")
+    print(f"Saved {len(all_jobs)} jobs to {out}/  stats={stats}")
 
     if not args.no_email:
-        send_email(f"{len(all_jobs)} new internships ({date_str})", body, attachment=csv_path)
+        send_email(f"{len(all_jobs)} new internships & part-time roles ({when})", body,
+                   attachment=csv_path)
         print("Email sent.")
-
-    if not all_jobs:
-        print("WARNING: 0 results. LinkedIn may be rate-limiting or changed its HTML.", file=sys.stderr)
     return 0
 
 

@@ -1,23 +1,168 @@
-# Each search = one LinkedIn location (country or city).
-# remote_only: true  -> only internships marked "Remote" on LinkedIn
-# A job found by several searches is listed only once (under the first search).
-searches:
+# ---------------------------------------------------------------------------
+# Where to search. Each entry = one LinkedIn location (country or city).
+# remote_only: true -> keep only jobs whose title/location/description says
+#                      they are remote (LinkedIn's own remote filter is ignored
+#                      for logged-out searches, so we check the text ourselves).
+# A job found by several searches is listed once, under the first search.
+# ---------------------------------------------------------------------------
+locations:
   - location: Germany
     remote_only: true
-  - location: Berlin
   - location: Paris
   - location: Lyon
+  - location: Belgium
   - location: Netherlands
   - location: Luxembourg
   - location: Switzerland
 
-# Keywords to filter by. Empty string = any internship.
-# Add more entries to run several searches, e.g. ["software", "data"].
-keywords:
-  - ""
+# Only jobs posted in this many seconds. 43200 = 12 hours, matching the
+# twice-a-day schedule so the two emails don't repeat jobs.
+posted_within_seconds: 43200
 
-# Only jobs posted in this many seconds (86400 = last 24 hours)
-posted_within_seconds: 86400
+# Keep only these LinkedIn "Employment type" values (checked on each job page).
+# Other values LinkedIn uses: Full-time, Temporary, Volunteer, Other.
+allowed_employment_types:
+  - Internship
+  - Part-time
+  - Contract
 
-# Safety cap on results per search (LinkedIn serves at most ~1000)
-max_results_per_country: 1000
+# Drop jobs whose description requires at least this many years of experience.
+# "3-5 years" counts as 3 (kept); "5+ years" or "5-7 years" counts as 5 (dropped).
+max_years_experience: 5
+
+# Words that mark internship / part-time / contract roles (EN, FR, DE, NL).
+# Combined with each domain's search terms into one LinkedIn query.
+role_search_terms:
+  - intern
+  - internship
+  - stage
+  - stagiaire
+  - alternance
+  - praktikum
+  - praktikant
+  - werkstudent
+  - working student
+  - stagiair
+  - part-time
+  - part time
+  - parttime
+  - teilzeit
+  - temps partiel
+  - deeltijd
+  - freelance
+  - freelancer
+  - contractor
+
+# Domains. "search" terms go into the LinkedIn query. A job is kept only if
+# its TITLE contains one of the "title" terms (case-insensitive; terms of 3
+# letters or fewer must be whole words). Edit freely.
+domains:
+  Product Management:
+    search: ["product manager", "product management", "product owner", "chef de produit", "produktmanagement", "product marketing"]
+    title: ["product", "produit", "produkt", "pmo"]
+  Project Management:
+    search: ["project manager", "project management", "chef de projet", "projektmanagement", "projectmanagement", "program manager", "PMO"]
+    title: ["project", "projet", "projekt", "program", "programme", "pmo"]
+  Strategy & Consulting:
+    search: ["strategy", "consulting", "consultant", "stratégie", "conseil", "strategie", "beratung", "business development", "corporate development", "transformation"]
+    title: ["strateg", "consult", "conseil", "berat", "advisory", "business development", "corporate development", "transformation", "m&a", "business analyst", "venture", "innovation"]
+  Marketing & Sales:
+    search: ["marketing", "sales", "vertrieb", "commercial", "business developer", "account manager", "brand", "communication", "growth"]
+    title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", "event", "pr ", "media", "kam", "key account", "partnership", "customer success", "market"]
+  Finance:
+    search: ["finance", "financial", "controlling", "investment", "audit", "accounting", "comptabilité", "buchhaltung", "private equity", "treasury", "M&A", "FP&A"]
+    title: ["financ", "controll", "invest", "audit", "accounting", "comptab", "buchhalt", "boekhoud", "treasury", "fp&a", "m&a", "private equity", "venture capital", "banking", "tax", "fiscal", "steuer", "risk", "credit", "valuation", "asset", "wealth", "equity", "trésorerie", "fund"]
+  Data Analytics:
+    search: ["data analyst", "data analytics", "business analyst", "business intelligence", "analytics", "data science", "datenanalyse", "power bi"]
+    title: ["data", "analyt", "analyst", "analyse", "bi", "business intelligence", "insight", "reporting", "dashboard", "statistic", "power bi", "sql"]
+  Supply Chain & Operations:
+    search: ["supply chain", "logistics", "logistique", "logistik", "operations", "procurement", "achats", "einkauf", "purchasing", "sourcing"]
+    title: ["supply chain", "logist", "operation", "opération", "procurement", "achat", "einkauf", "purchas", "sourcing", "buyer", "acheteur", "demand", "planning", "planner", "s&op", "inventory", "lean", "process"]
+
+# Titles containing any of these are dropped before checking job details:
+# senior roles (likely 5+ years) and non-office jobs that match domain words.
+exclude_title_terms:
+  - head of
+  - director
+  - directeur
+  - directrice
+  - vice president
+  - vp
+  - chief
+  - cfo
+  - cmo
+  - coo
+  - ceo
+  - senior
+  - sr
+  - principal
+  - leiter
+  - leiterin
+  - leitung
+  - managing partner
+  - driver
+  - chauffeur
+  - fahrer
+  - warehouse
+  - magazijn
+  - lagerist
+  - lagermitarbeiter
+  - operator
+  - ouvrier
+  - courier
+  - koerier
+  - kurier
+  - bezorger
+  - picker
+  - cashier
+  - caissier
+  - kassierer
+  - vendeur
+  - vendeuse
+  - verkäufer
+  - verkoper
+  - employé de rayon
+  - monteur
+  - technician
+  - techniker
+  - mechanic
+  - elektriker
+  - nurse
+  - cook
+  - koch
+  - cleaner
+  - barista
+  - serveur
+  - kellner
+  - teacher
+  - lehrer
+
+# Words that mark a job as remote (used for remote_only locations).
+# Title or location containing "remote" / "home office" always counts.
+remote_description_terms:
+  - fully remote
+  - full remote
+  - 100% remote
+  - 100 % remote
+  - remote-first
+  - remote first
+  - remote internship
+  - remote position
+  - remote role
+  - remote job
+  - work from anywhere
+  - work from home
+  - komplett remote
+  - vollständig remote
+  - vollremote
+  - remote möglich
+  - remote arbeiten
+  - remote work
+  - 100% homeoffice
+  - 100 % homeoffice
+  - 100% home office
+  - ortsunabhängig
+  - mobiles arbeiten
+
+# Safety caps per search
+max_pages_per_search: 30
