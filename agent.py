@@ -143,9 +143,13 @@ def parse_detail(page_html: str) -> tuple[dict[str, str], str]:
 # Filters
 # --------------------------------------------------------------------------
 def term_regex(terms: list[str]) -> re.Pattern:
-    """Short terms (<=3 chars) must be whole words; longer ones match anywhere."""
+    """Short terms (<=3 chars) must be whole words; longer ones match anywhere.
+    A term starting with "re:" is used as a raw regular expression."""
     parts = []
     for t in terms:
+        if t.startswith("re:"):
+            parts.append(t[3:])
+            continue
         t = t.strip().lower()
         if not t:
             continue
@@ -281,7 +285,7 @@ def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats:
         p.append("</ul>")
     p.append(
         "<p style='color:#888;font-size:12px'>Checked "
-        f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} wrong employment type, "
+        f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} full-time, "
         f"{stats.get('too_senior', 0)} needing {stats.get('max_years')}+ years, "
         f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div>"
     )
@@ -388,10 +392,13 @@ def main() -> int:
     exclude_re = term_regex(cfg.get("exclude_title_terms", []))
     remote_re = term_regex(cfg.get("remote_description_terms", []))
     max_pages = int(cfg.get("max_pages_per_search", 30))
+    marker_re = term_regex(cfg.get("role_title_markers", [])) if cfg.get("role_title_markers") else INTERN_TITLE_RE
+    weak_re = term_regex(cfg.get("role_title_markers_need_label", []))
+    check_unmarked = bool(cfg.get("check_titles_without_marker", False))
 
     session = requests.Session()
-    stats = {"candidates": 0, "wrong_type": 0, "too_senior": 0, "not_remote": 0,
-             "max_years": max_years}
+    stats = {"candidates": 0, "no_role_word": 0, "wrong_type": 0, "too_senior": 0,
+             "not_remote": 0, "max_years": max_years}
     seen: set[str] = set()
     by_loc: dict[str, list[Job]] = {}
 
@@ -416,6 +423,10 @@ def main() -> int:
                     continue
                 if j.job_id in candidates:
                     continue
+                if not check_unmarked and not (marker_re.search(j.title) or weak_re.search(j.title)):
+                    seen.add(j.job_id)
+                    stats["no_role_word"] += 1
+                    continue
                 j.domains = tags
                 candidates[j.job_id] = j
                 kept += 1
@@ -434,13 +445,11 @@ def main() -> int:
             j.employment_type = criteria.get("Employment type", "")
             j.seniority = criteria.get("Seniority level", "")
             etype = j.employment_type.lower()
-            if etype:
+            if marker_re.search(j.title):
                 if etype not in allowed_types:
-                    stats["wrong_type"] += 1
-                    continue
-            elif INTERN_TITLE_RE.search(j.title) and "internship" in allowed_types:
-                j.employment_type = "Internship"
-            else:
+                    # Title says intern/Werkstudent/part-time; trust it over the label.
+                    j.employment_type = (j.employment_type + " (title: role word)").strip()
+            elif etype not in allowed_types:
                 stats["wrong_type"] += 1
                 continue
             j.min_years = required_years(desc)

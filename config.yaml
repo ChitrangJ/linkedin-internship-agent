@@ -26,6 +26,42 @@ allowed_employment_types:
   - Part-time
   - Contract
 
+# A title containing any of these words counts as internship / part-time /
+# contract even if LinkedIn labels it "Full-time" (employers often mislabel).
+role_title_markers:
+  - 're:\binterns?(hip)?\b'
+  - 're:(?<!early )(?<!early-)(?<!late )(?<!late-)(?<!growth )(?<!seed )\bstage\b'
+  - stagiaire
+  - stagiair
+  - praktik
+  - werkstudent
+  - working student
+  - alternan
+  - part-time
+  - part time
+  - parttime
+  - teilzeit
+  - deeltijd
+  - temps partiel
+  - freelanc
+  - minijob
+  - aushilfe
+
+# Weaker words: the job is checked, but LinkedIn must ALSO label it with an
+# allowed employment type (so "Contract Manager" full-time jobs are dropped).
+role_title_markers_need_label:
+  - contract
+  - interim
+  - befristet
+  - temporary
+  - tijdelijk
+  - student
+
+# false (fast): only titles with a role marker above are checked.
+# true (slow, ~3x longer): also open every other matching job to look for
+#   part-time/contract roles that don't say so in the title (rarely found).
+check_titles_without_marker: false
+
 # Drop jobs whose description requires at least this many years of experience.
 # "3-5 years" counts as 3 (kept); "5+ years" or "5-7 years" counts as 5 (dropped).
 max_years_experience: 5
