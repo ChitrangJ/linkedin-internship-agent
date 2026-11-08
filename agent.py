@@ -461,6 +461,12 @@ def main() -> int:
                 stats["not_remote"] += 1
                 continue
             accepted.append(j)
+        # Same job posted twice under different IDs -> keep one.
+        uniq: dict[tuple, Job] = {}
+        for j in accepted:
+            key = (re.sub(r"\W+", " ", j.title.lower()).strip(), j.company.lower().strip())
+            uniq.setdefault(key, j)
+        accepted = list(uniq.values())
         by_loc[label] = accepted
         print(f"[{label}] {len(candidates)} candidates -> {len(accepted)} kept", flush=True)
 

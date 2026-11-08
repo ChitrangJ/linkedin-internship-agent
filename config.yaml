@@ -104,7 +104,7 @@ domains:
     title: ["strateg", "consult", "conseil", "berat", "advisory", "business development", "corporate development", "transformation", "m&a", "business analyst", "venture", "innovation"]
   Marketing & Sales:
     search: ["marketing", "sales", "vertrieb", "commercial", "business developer", "account manager", "brand", "communication", "growth"]
-    title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", "event", "pr ", "media", "kam", "key account", "partnership", "customer success", "market"]
+    title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", "event", "pr ", "social media", "digital media", "media planning", "media buy", "kam", "key account", "partnership", "customer success", "market"]
   Finance:
     search: ["finance", "financial", "controlling", "investment", "audit", "accounting", "comptabilité", "buchhaltung", "private equity", "treasury", "M&A", "FP&A"]
     title: ["financ", "controll", "invest", "audit", "accounting", "comptab", "buchhalt", "boekhoud", "treasury", "fp&a", "m&a", "private equity", "venture capital", "banking", "tax", "fiscal", "steuer", "risk", "credit", "valuation", "asset", "wealth", "equity", "trésorerie", "fund"]
@@ -113,7 +113,7 @@ domains:
     title: ["data", "analyt", "analyst", "analyse", "bi", "business intelligence", "insight", "reporting", "dashboard", "statistic", "power bi", "sql"]
   Supply Chain & Operations:
     search: ["supply chain", "logistics", "logistique", "logistik", "operations", "procurement", "achats", "einkauf", "purchasing", "sourcing"]
-    title: ["supply chain", "logist", "operation", "opération", "procurement", "achat", "einkauf", "purchas", "sourcing", "buyer", "acheteur", "demand", "planning", "planner", "s&op", "inventory", "lean", "process"]
+    title: ["supply chain", "logist", "operation", "opération", "procurement", "achat", "einkauf", "purchas", "sourcing", "buyer", "acheteur", "demand", "planning", "planner", "s&op", "inventory", "lean", "process improvement", "process excellence", "prozessmanagement", "operational excellence"]
 
 # Titles containing any of these are dropped before checking job details:
 # senior roles (likely 5+ years) and non-office jobs that match domain words.
@@ -172,6 +172,20 @@ exclude_title_terms:
   - kellner
   - teacher
   - lehrer
+  - productiemedewerker
+  - logistiek medewerker
+  - magazijnmedewerker
+  - orderpicker
+  - verkaufsberater
+  - kundenberater
+  - kundenberatung
+  - conseiller vente
+  - conseiller-ère vente
+  - conseillère vente
+  - vente omnicanal
+  - store assistant
+  - shop assistant
+  - filialmitarbeiter
 
 # Words that mark a job as remote (used for remote_only locations).
 # Title or location containing "remote" / "home office" always counts.
