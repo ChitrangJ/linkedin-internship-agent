@@ -111,10 +111,10 @@ domains:
     title: ["strateg", "consult", "conseil", "berat", "advisory", "business development", "corporate development", "transformation", "m&a", "business analyst", "venture", "innovation"]
   Marketing & Sales:
     search: ["marketing", "sales", "vertrieb", "commercial", "business developer", "account manager", "brand", "communication", "growth"]
-    title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", "event", "pr ", "social media", "digital media", "media planning", "media buy", "kam", "key account", "partnership", "customer success", "market"]
+    title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", 're:\bevents?\b', "événement", "evenement", "évènement", "pr ", "social media", "digital media", "media planning", "media buy", "kam", "key account", "partnership", "customer success", "market"]
   HR:
     search: ["human resources", "HR", "ressources humaines", "RH", "recruitment", "recrutement", "talent acquisition", "recruiting", "personalwesen", "personalmanagement", "people operations"]
-    title: ["hr", "rh", "human resources", "ressources humaines", "recruit", "recrut", "talent", "people", "personalwesen", "personalmanagement", "personalreferent", "personalabteilung", "personalmarketing", "payroll", "paie", "employer branding", "learning & development", "l&d", "compensation", "c&b", "onboarding"]
+    title: ["hr", "rh", "human resources", "ressources humaines", "recruit", "recrut", "talent", "people", "personalwesen", "personalmanagement", "personalreferent", "personalabteilung", "personalmarketing", "payroll", "paie", "employer branding", "learning & development", "l&d", "compensation & benefits", "compensation and benefits", "c&b", "employee onboarding"]
   Finance:
     search: ["finance", "financial", "controlling", "investment", "audit", "accounting", "comptabilité", "buchhaltung", "private equity", "treasury", "M&A", "FP&A"]
     title: ["financ", "controll", "invest", "audit", "accounting", "comptab", "buchhalt", "boekhoud", "treasury", "fp&a", "m&a", "private equity", "venture capital", "banking", "tax", "fiscal", "steuer", "risk", "credit", "valuation", "asset", "wealth", "equity", "trésorerie", "fund"]
@@ -173,6 +173,9 @@ exclude_title_terms:
   - barista
   - serveur
   - kellner
+  - cuisine
+  - cuisinier
+  - commis
   - teacher
   - lehrer
   - productiemedewerker

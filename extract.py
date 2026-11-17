@@ -63,9 +63,10 @@ _START_KW = (
     r"date\s+d'entrée|beginn|eintritt(?:sdatum)?|startdatum|starttermin|einstieg|zum|ab\s+(?:dem|sofort)?|"
     r"vanaf|begindatum|per\b|from\b|commencing|beginning|as\s+of|for\s+a\s+start|\bstart\b"
 )
-_START_RE = re.compile(rf"(?:{_START_KW})[^.;!?\n]{{0,40}}?({_DATE_RE})", re.I)
+_NOT_MONTH = r"(?!\s+(?:food|wrigley|petcare|pet\s*care|inc|incorporated|chocolat|group|groupe)\b)"
+_START_RE = re.compile(rf"(?:{_START_KW})[^.;!?\n]{{0,40}}?({_DATE_RE}){_NOT_MONTH}", re.I)
 _TITLE_DATE_RE = re.compile(
-    rf"(?:start(?:ing)?|from|dès|ab|à\s+partir\s+de|début)?\s*({_DATE_RE})", re.I
+    rf"(?:start(?:ing)?|from|dès|ab|à\s+partir\s+de|début)?\s*({_DATE_RE}){_NOT_MONTH}", re.I
 )
 _ASAP_RE = re.compile(
     r"\basap\b|as\s+soon\s+as\s+possible|immediate(?:ly)?\s+start|start\s+immediately|"
