@@ -493,8 +493,14 @@ def main() -> int:
             if remote_only and not j.remote:
                 stats["not_remote"] += 1
                 continue
-            j.start_date = extract.start_date(j.title, desc)
-            j.requirements = extract.requirements(desc, _YEARS_RE, _EXP_WORDS)
+            try:
+                j.start_date = extract.start_date(j.title, desc)
+            except Exception as e:  # never let a parsing edge case kill the run
+                print(f"  start-date parse failed for {j.job_id}: {e}", file=sys.stderr)
+            try:
+                j.requirements = extract.requirements(desc, _YEARS_RE, _EXP_WORDS)
+            except Exception as e:
+                print(f"  requirements parse failed for {j.job_id}: {e}", file=sys.stderr)
             accepted.append(j)
         # Same job posted twice under different IDs -> keep one.
         uniq: dict[tuple, Job] = {}

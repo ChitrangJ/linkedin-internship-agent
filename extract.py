@@ -87,7 +87,8 @@ def _normalize_date(s: str) -> str:
             return f"{d} {_EN_MONTHS[mo - 1].capitalize()} {y if len(y) == 4 else '20' + y}"
         return s
     def month(m):
-        return _MONTH_LOOKUP[m.group(0).lower()].capitalize()
+        key = m.group(0).lower().rstrip(".")
+        return _MONTH_LOOKUP.get(key, key).capitalize()
     sem = re.search(r"(1er|premier|first|1st|2e|2ème|second|2nd)\s+(?:semestre|semester|half)(?:\s+(?:of\s+)?(20\d\d))?", s, re.I)
     if sem:
         first = sem.group(1).lower() in ("1er", "premier", "first", "1st")
