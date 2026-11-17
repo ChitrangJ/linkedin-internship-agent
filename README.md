@@ -1,6 +1,6 @@
 # LinkedIn Internship Agent
 
-Twice a day (**6 AM and 6 PM IST**) emails you new LinkedIn roles posted in the
+Twice a day (started at **5:35 AM and 5:35 PM IST**, email ~40-60 min later) emails you new LinkedIn roles posted in the
 **last 12 hours** that are:
 
 - **Internship, part-time or contract** (LinkedIn's "Employment type", checked on each job page)
@@ -43,8 +43,9 @@ Each run's CSV and HTML are also kept as a workflow artifact for 30 days.
 - `max_years_experience`: drop jobs requiring this many years or more
 - `domains`: search terms and title words per domain (their order = email sort order)
 - `exclude_title_terms`: titles to always drop (Senior, Director, driver, …)
-- Schedule: the `cron` line in `.github/workflows/daily.yml` (in UTC; IST = UTC+5:30).
-  If you change it, set `posted_within_seconds` to the gap between runs.
+- Schedule: runs are started by a Claude scheduled task ("LinkedIn internship digest",
+  manage it in the Claude app). If you change its times, set `posted_within_seconds`
+  to the gap between runs.
 
 ## Run locally
 
