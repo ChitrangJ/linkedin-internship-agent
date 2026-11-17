@@ -269,6 +269,21 @@ def search(session, location: str, keywords: str, seconds: int, max_pages: int,
 # --------------------------------------------------------------------------
 # Email
 # --------------------------------------------------------------------------
+_EMAIL_CSS = (
+    "<style>"
+    "body,.w{font-family:Arial,sans-serif}"
+    ".w{max-width:780px}"
+    "li{margin-bottom:12px}"
+    ".t{font-size:15px;font-weight:bold}"
+    ".m{color:#555}"
+    ".s{background:#fff3b0;padding:1px 6px;border-radius:3px;font-weight:bold}"
+    ".n{color:#999}"
+    ".r{color:#a33}"
+    "h3{border-bottom:1px solid #ccc;padding-bottom:4px}"
+    "</style>"
+)
+
+
 def _job_html(j: Job) -> str:
     e = html.escape
     meta = [e(j.company), e(j.location), e(j.employment_type)]
@@ -276,47 +291,39 @@ def _job_html(j: Job) -> str:
         meta.append("Remote")
     if j.posted_ago:
         meta.append(f"posted {e(j.posted_ago)}")
-    start = (
-        f"<span style='background:#fff3b0;padding:1px 6px;border-radius:3px'><b>📅 Start: {e(j.start_date)}</b></span>"
-        if j.start_date else
-        "<span style='color:#999'>📅 Start: not stated</span>"
-    )
-    reqs = (
-        "<br><span style='color:#a33'>⚠️ <b>Requirements:</b> " + " · ".join(e(r) for r in j.requirements) + "</span>"
-        if j.requirements else ""
-    )
-    return (
-        "<li style='margin-bottom:12px'>"
-        f"<a href='{e(j.url)}' style='font-size:15px'><b>{e(j.title)}</b></a><br>"
-        f"<span style='color:#555'>{' · '.join(meta)}</span><br>"
-        f"<span style='color:#666;font-size:12px'><i>{e(', '.join(j.domains) or 'Others')}</i></span><br>"
-        f"{start}{reqs}</li>"
-    )
+    meta.append(f"<i>{e(', '.join(j.domains) or 'Others')}</i>")
+    start = (f"<span class=s>📅 Start: {e(j.start_date)}</span>" if j.start_date
+             else "<span class=n>📅 Start: n/a</span>")
+    reqs = ("<br><span class=r>⚠️ <b>Requirements:</b> " + " · ".join(e(r) for r in j.requirements) + "</span>"
+            if j.requirements else "")
+    link = f"https://www.linkedin.com/jobs/view/{j.job_id}"  # short form of the posting URL
+    return (f"<li><a class=t href={link}>{e(j.title)}</a><br>"
+            f"<span class=m>{' · '.join(meta)}</span><br>{start}{reqs}</li>")
 
 
 def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats: dict) -> str:
     total = sum(len(v) for v in by_loc.values())
     p = [
-        "<div style='font-family:Arial,sans-serif;max-width:780px'>",
+        f"<html><head><meta charset=utf-8>{_EMAIL_CSS}</head><body><div class=w>",
         f"<h2 style='margin-bottom:4px'>{total} internships / part-time / contract roles</h2>",
-        f"<p style='color:#555;margin-top:0'>Posted in the last {hours}h · {html.escape(when)}<br>"
+        f"<p class=m style='margin-top:0'>Posted in the last {hours}h · {html.escape(when)}<br>"
         "Sorted by location, then newest first, then domain.</p>",
         "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in by_loc.items()) + "</p>",
     ]
     for loc, jobs in by_loc.items():
-        p.append(f"<h3 style='border-bottom:1px solid #ccc;padding-bottom:4px'>{html.escape(loc)} ({len(jobs)})</h3>")
+        p.append(f"<h3>{html.escape(loc)} ({len(jobs)})</h3>")
         if not jobs:
-            p.append("<p style='color:#777'>Nothing new.</p>")
+            p.append("<p class=n>Nothing new.</p>")
             continue
         p.append("<ul style='padding-left:18px'>")
         p.extend(_job_html(j) for j in jobs)  # already sorted: newest first, then domain
         p.append("</ul>")
     p.append(
-        "<p style='color:#888;font-size:12px'>Start dates and requirements are read automatically from the "
+        "<p class=n style='font-size:12px'>Start dates and requirements are read automatically from the "
         "job description; check the posting before applying. Checked "
         f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} full-time, "
         f"{stats.get('too_senior', 0)} needing {stats.get('max_years')}+ years, "
-        f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div>"
+        f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div></body></html>"
     )
     return "\n".join(p)
 
@@ -481,7 +488,11 @@ def main() -> int:
             if marker_re.search(j.title):
                 if etype not in allowed_types:
                     # Title says intern/Werkstudent/part-time; trust it over the label.
-                    j.employment_type = (j.employment_type + " (title: role word)").strip()
+                    t = j.title.lower()
+                    kind = ("Internship" if INTERN_TITLE_RE.search(t) else
+                            "Part-time" if re.search(r"part[- ]?time|teilzeit|deeltijd|temps partiel|minijob|aushilfe", t) else
+                            "Freelance" if "freelanc" in t else "Internship / part-time")
+                    j.employment_type = f"{kind} (LinkedIn says {j.employment_type or 'n/a'})"
             elif etype not in allowed_types:
                 stats["wrong_type"] += 1
                 continue
