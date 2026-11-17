@@ -41,6 +41,8 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 
+import extract
+
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}"
 HEADERS = {
@@ -70,6 +72,10 @@ class Job:
     seniority: str = ""
     min_years: int | None = None
     remote: bool = False
+    posted_ago: str = ""
+    minutes_ago: float = 10 ** 6
+    start_date: str = ""
+    requirements: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +126,9 @@ def parse_cards(page_html: str, search_label: str) -> list[Job]:
             title=_txt(li.find(class_=re.compile(r"base-search-card__title"))),
             company=_txt(li.find(class_=re.compile(r"base-search-card__subtitle"))),
             location=_txt(li.find(class_=re.compile(r"job-search-card__location"))),
-            posted=(time_el.get("datetime") or _txt(time_el)) if time_el else "",
+            posted=(time_el.get("datetime") or "") if time_el else "",
+            posted_ago=_txt(time_el) if time_el else "",
+            minutes_ago=extract.minutes_ago(_txt(time_el)) if time_el else 10 ** 6,
             url=url or f"https://www.linkedin.com/jobs/view/{m.group(1)}",
             search=search_label,
         ))
@@ -203,6 +211,8 @@ def required_years(description: str) -> int | None:
             r"(experience|expérience|erfahrung|berufserfahrung|ervaring)\s*"
             r":?\s*(of|von|de|d'|van)?\s*(at least|minimum|min\.|mindestens|au moins|minimaal|minstens)?\s*$",
             before)
+        if extract._MAX_WORDS.search(before):
+            continue  # "max 4 years" is a ceiling, not a requirement
         if _EXP_WORDS.search(after) or exp_before or _MIN_WORDS.search(before[-25:]):
             if re.search(r"years? old|ans? et plus|jahre alt|jaar oud|founded|gegründet|fondée|since|seit|depuis", before[-25:] + after[:25]):
                 continue
@@ -259,12 +269,38 @@ def search(session, location: str, keywords: str, seconds: int, max_pages: int,
 # --------------------------------------------------------------------------
 # Email
 # --------------------------------------------------------------------------
+def _job_html(j: Job) -> str:
+    e = html.escape
+    meta = [e(j.company), e(j.location), e(j.employment_type)]
+    if j.remote:
+        meta.append("Remote")
+    if j.posted_ago:
+        meta.append(f"posted {e(j.posted_ago)}")
+    start = (
+        f"<span style='background:#fff3b0;padding:1px 6px;border-radius:3px'><b>📅 Start: {e(j.start_date)}</b></span>"
+        if j.start_date else
+        "<span style='color:#999'>📅 Start: not stated</span>"
+    )
+    reqs = (
+        "<br><span style='color:#a33'>⚠️ <b>Requirements:</b> " + " · ".join(e(r) for r in j.requirements) + "</span>"
+        if j.requirements else ""
+    )
+    return (
+        "<li style='margin-bottom:12px'>"
+        f"<a href='{e(j.url)}' style='font-size:15px'><b>{e(j.title)}</b></a><br>"
+        f"<span style='color:#555'>{' · '.join(meta)}</span><br>"
+        f"<span style='color:#666;font-size:12px'><i>{e(', '.join(j.domains) or 'Others')}</i></span><br>"
+        f"{start}{reqs}</li>"
+    )
+
+
 def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats: dict) -> str:
     total = sum(len(v) for v in by_loc.values())
     p = [
         "<div style='font-family:Arial,sans-serif;max-width:780px'>",
         f"<h2 style='margin-bottom:4px'>{total} internships / part-time / contract roles</h2>",
-        f"<p style='color:#555;margin-top:0'>Posted in the last {hours}h · {html.escape(when)}</p>",
+        f"<p style='color:#555;margin-top:0'>Posted in the last {hours}h · {html.escape(when)}<br>"
+        "Sorted by location, then newest first, then domain.</p>",
         "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in by_loc.items()) + "</p>",
     ]
     for loc, jobs in by_loc.items():
@@ -273,18 +309,11 @@ def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats:
             p.append("<p style='color:#777'>Nothing new.</p>")
             continue
         p.append("<ul style='padding-left:18px'>")
-        for j in sorted(jobs, key=lambda x: (x.domains[0] if x.domains else "", x.company.lower())):
-            tags = ", ".join(j.domains)
-            yrs = f" · {j.min_years}+ yrs" if j.min_years else ""
-            p.append(
-                f"<li style='margin-bottom:7px'><a href='{html.escape(j.url)}'><b>{html.escape(j.title)}</b></a><br>"
-                f"<span style='color:#333'>{html.escape(j.company)}</span>"
-                f"<span style='color:#666'> · {html.escape(j.location)} · {html.escape(j.employment_type)}"
-                f"{' · Remote' if j.remote else ''}{yrs} · <i>{html.escape(tags)}</i></span></li>"
-            )
+        p.extend(_job_html(j) for j in jobs)  # already sorted: newest first, then domain
         p.append("</ul>")
     p.append(
-        "<p style='color:#888;font-size:12px'>Checked "
+        "<p style='color:#888;font-size:12px'>Start dates and requirements are read automatically from the "
+        "job description; check the posting before applying. Checked "
         f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} full-time, "
         f"{stats.get('too_senior', 0)} needing {stats.get('max_years')}+ years, "
         f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div>"
@@ -389,6 +418,10 @@ def main() -> int:
     role_terms = cfg["role_search_terms"]
     domains = cfg["domains"]
     domain_title_re = {name: term_regex(d["title"]) for name, d in domains.items()}
+    order = list(domains)  # config order = email sort order; untagged jobs go last ("Others")
+
+    def domain_rank(job: Job) -> int:
+        return min((order.index(d) for d in job.domains if d in order), default=len(order))
     exclude_re = term_regex(cfg.get("exclude_title_terms", []))
     remote_re = term_regex(cfg.get("remote_description_terms", []))
     max_pages = int(cfg.get("max_pages_per_search", 30))
@@ -427,7 +460,7 @@ def main() -> int:
                     seen.add(j.job_id)
                     stats["no_role_word"] += 1
                     continue
-                j.domains = tags
+                j.domains = tags  # already in config (sort) order
                 candidates[j.job_id] = j
                 kept += 1
             print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches", flush=True)
@@ -460,6 +493,8 @@ def main() -> int:
             if remote_only and not j.remote:
                 stats["not_remote"] += 1
                 continue
+            j.start_date = extract.start_date(j.title, desc)
+            j.requirements = extract.requirements(desc, _YEARS_RE, _EXP_WORDS)
             accepted.append(j)
         # Same job posted twice under different IDs -> keep one.
         uniq: dict[tuple, Job] = {}
@@ -467,6 +502,7 @@ def main() -> int:
             key = (re.sub(r"\W+", " ", j.title.lower()).strip(), j.company.lower().strip())
             uniq.setdefault(key, j)
         accepted = list(uniq.values())
+        accepted.sort(key=lambda x: (x.minutes_ago, domain_rank(x)))
         by_loc[label] = accepted
         print(f"[{label}] {len(candidates)} candidates -> {len(accepted)} kept", flush=True)
 
@@ -483,6 +519,7 @@ def main() -> int:
         for j in all_jobs:
             row = asdict(j)
             row["domains"] = "; ".join(j.domains)
+            row["requirements"] = "; ".join(j.requirements)
             w.writerow(row)
     body = build_email_html(by_loc, when, round(seconds / 3600), stats)
     (out / f"internships-{stamp}.html").write_text(body, encoding="utf-8")

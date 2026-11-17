@@ -6,15 +6,15 @@
 # A job found by several searches is listed once, under the first search.
 # ---------------------------------------------------------------------------
 locations:
-  - location: Germany
-    remote_only: true
-  - location: Paris
+  # Email order = this order.
   - location: Lyon
+  - location: Paris
+  - location: Luxembourg
   - location: Belgium
   - location: Netherlands
-  - location: Luxembourg
   - location: Switzerland
-
+  - location: Germany
+    remote_only: true
 # Only jobs posted in this many seconds. 43200 = 12 hours, matching the
 # twice-a-day schedule so the two emails don't repeat jobs.
 posted_within_seconds: 43200
@@ -93,6 +93,13 @@ role_search_terms:
 # its TITLE contains one of the "title" terms (case-insensitive; terms of 3
 # letters or fewer must be whole words). Edit freely.
 domains:
+  # Email sort order = this order (jobs matching none would be listed as "Others").
+  Supply Chain & Operations:
+    search: ["supply chain", "logistics", "logistique", "logistik", "operations", "procurement", "achats", "einkauf", "purchasing", "sourcing"]
+    title: ["supply chain", "logist", "operation", "opération", "procurement", "achat", "einkauf", "purchas", "sourcing", "buyer", "acheteur", "demand", "planning", "planner", "s&op", "inventory", "lean", "process improvement", "process excellence", "prozessmanagement", "operational excellence"]
+  Data & Analytics:
+    search: ["data analyst", "data analytics", "business analyst", "business intelligence", "analytics", "data science", "datenanalyse", "power bi"]
+    title: ["data", "analyt", "analyst", "analyse", "bi", "business intelligence", "insight", "reporting", "dashboard", "statistic", "power bi", "sql"]
   Product Management:
     search: ["product manager", "product management", "product owner", "chef de produit", "produktmanagement", "product marketing"]
     title: ["product", "produit", "produkt", "pmo"]
@@ -105,16 +112,12 @@ domains:
   Marketing & Sales:
     search: ["marketing", "sales", "vertrieb", "commercial", "business developer", "account manager", "brand", "communication", "growth"]
     title: ["marketing", "sales", "vertrieb", "verkauf", "commercial", "brand", "communic", "kommunikation", "growth", "crm", "account", "e-commerce", "ecommerce", "social media", "content", "seo", "category", "pricing", "trade", "retail", "influence", "event", "pr ", "social media", "digital media", "media planning", "media buy", "kam", "key account", "partnership", "customer success", "market"]
+  HR:
+    search: ["human resources", "HR", "ressources humaines", "RH", "recruitment", "recrutement", "talent acquisition", "recruiting", "personalwesen", "personalmanagement", "people operations"]
+    title: ["hr", "rh", "human resources", "ressources humaines", "recruit", "recrut", "talent", "people", "personalwesen", "personalmanagement", "personalreferent", "personalabteilung", "personalmarketing", "payroll", "paie", "employer branding", "learning & development", "l&d", "compensation", "c&b", "onboarding"]
   Finance:
     search: ["finance", "financial", "controlling", "investment", "audit", "accounting", "comptabilité", "buchhaltung", "private equity", "treasury", "M&A", "FP&A"]
     title: ["financ", "controll", "invest", "audit", "accounting", "comptab", "buchhalt", "boekhoud", "treasury", "fp&a", "m&a", "private equity", "venture capital", "banking", "tax", "fiscal", "steuer", "risk", "credit", "valuation", "asset", "wealth", "equity", "trésorerie", "fund"]
-  Data Analytics:
-    search: ["data analyst", "data analytics", "business analyst", "business intelligence", "analytics", "data science", "datenanalyse", "power bi"]
-    title: ["data", "analyt", "analyst", "analyse", "bi", "business intelligence", "insight", "reporting", "dashboard", "statistic", "power bi", "sql"]
-  Supply Chain & Operations:
-    search: ["supply chain", "logistics", "logistique", "logistik", "operations", "procurement", "achats", "einkauf", "purchasing", "sourcing"]
-    title: ["supply chain", "logist", "operation", "opération", "procurement", "achat", "einkauf", "purchas", "sourcing", "buyer", "acheteur", "demand", "planning", "planner", "s&op", "inventory", "lean", "process improvement", "process excellence", "prozessmanagement", "operational excellence"]
-
 # Titles containing any of these are dropped before checking job details:
 # senior roles (likely 5+ years) and non-office jobs that match domain words.
 exclude_title_terms:
