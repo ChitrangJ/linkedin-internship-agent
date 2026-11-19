@@ -6,15 +6,23 @@
 # A job found by several searches is listed once, under the first search.
 # ---------------------------------------------------------------------------
 locations:
-  # Email order = this order.
+  # Email order = this order. must_contain: the job's location must include one
+  # of these (LinkedIn sometimes widens a city search to the whole country).
   - location: Lyon
+    must_contain: [Lyon, Auvergne-Rhône-Alpes, Villeurbanne, Rhône]
   - location: Paris
+    must_contain: [Paris, Île-de-France, Ile-de-France]
   - location: Luxembourg
+    must_contain: [Luxembourg]
   - location: Belgium
+    must_contain: [Belgium, Belgique, België]
   - location: Netherlands
+    must_contain: [Netherlands, Nederland]
   - location: Switzerland
+    must_contain: [Switzerland, Suisse, Schweiz]
   - location: Germany
     remote_only: true
+    must_contain: [Germany, Deutschland, Remote]
 # Only jobs posted in this many seconds. 43200 = 12 hours, matching the
 # twice-a-day schedule so the two emails don't repeat jobs.
 posted_within_seconds: 43200
@@ -222,3 +230,9 @@ remote_description_terms:
 
 # Safety caps per search
 max_pages_per_search: 30
+
+# Time/volume limits so the email always goes out (GitHub stops a run at 120 min).
+# When hit, the newest postings are checked first and the email says which
+# locations were only partly checked.
+max_run_minutes: 100
+max_detail_checks_per_location: 150

@@ -9,6 +9,10 @@ on:
         description: "Only send a test email (skip the LinkedIn search)"
         type: boolean
         default: false
+      hours:
+        description: "Catch-up: look back this many hours instead of 12 (e.g. 17). Empty = default"
+        type: string
+        default: ""
       only:
         description: "Preview: only these locations, comma separated (e.g. Paris, Lyon). Empty = all"
         type: string
@@ -31,7 +35,8 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           PYTHONUNBUFFERED: "1"
           ONLY: ${{ inputs.only }}
-        run: python agent.py ${{ inputs.test_email && '--test-email' || '' }} ${{ inputs.only && '--only "$ONLY"' || '' }}
+          HOURS: ${{ inputs.hours }}
+        run: python agent.py ${{ inputs.test_email && '--test-email' || '' }} ${{ inputs.only && '--only "$ONLY"' || '' }} ${{ inputs.hours && '--hours "$HOURS"' || '' }}
       - uses: actions/upload-artifact@v4
         if: always() && !inputs.test_email
         with:

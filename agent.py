@@ -310,6 +310,9 @@ def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats:
         "Sorted by location, then newest first, then domain.</p>",
         "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in by_loc.items()) + "</p>",
     ]
+    if stats.get("partial"):
+        p.append("<p class=r>⏱️ Very busy period: not every posting could be checked for "
+                 + html.escape(", ".join(stats["partial"])) + " (newest ones were checked first).</p>")
     for loc, jobs in by_loc.items():
         p.append(f"<h3>{html.escape(loc)} ({len(jobs)})</h3>")
         if not jobs:
@@ -406,6 +409,7 @@ def main() -> int:
     ap.add_argument("--test-email", action="store_true",
                     help="only send a short test email (no LinkedIn search)")
     ap.add_argument("--only", help="comma-separated locations to run (for testing)")
+    ap.add_argument("--hours", type=float, help="override the posting window, e.g. 17 to catch up after a missed run")
     args = ap.parse_args()
 
     if args.test_email:
@@ -419,7 +423,14 @@ def main() -> int:
     if args.only:
         keep = {x.strip().lower() for x in args.only.split(",")}
         locations = [l for l in locations if l["location"].lower() in keep]
-    seconds = int(cfg.get("posted_within_seconds", 43200))
+    seconds = int(args.hours * 3600) if args.hours else int(cfg.get("posted_within_seconds", 43200))
+    t_start = time.monotonic()
+    budget = float(cfg.get("max_run_minutes", 100)) * 60
+    max_checks = int(cfg.get("max_detail_checks_per_location", 150))
+    partial: list[str] = []
+
+    def out_of_time() -> bool:
+        return time.monotonic() - t_start > budget
     allowed_types = {t.lower() for t in cfg.get("allowed_employment_types", ["Internship"])}
     max_years = int(cfg.get("max_years_experience", 5))
     role_terms = cfg["role_search_terms"]
@@ -446,16 +457,27 @@ def main() -> int:
         loc = loc_cfg["location"]
         remote_only = bool(loc_cfg.get("remote_only", False))
         label = f"{loc} (remote)" if remote_only else loc
+        # LinkedIn sometimes widens a city search to the whole country, so check
+        # the card's location really is in this place.
+        loc_re = term_regex(loc_cfg.get("must_contain") or [loc])
+        by_loc[label] = []
 
         # 1. search each domain, 2. title filter
         candidates: dict[str, Job] = {}
         for dname, d in domains.items():
+            if out_of_time():
+                partial.append(label)
+                break
             q = build_query(role_terms, d["search"], remote_only)
             results = search(session, loc, q, seconds, max_pages, label)
             kept = 0
+            off_area = 0
             for j in results:
                 if j.job_id in seen:
                     continue
+                if j.location and not loc_re.search(j.location):
+                    off_area += 1
+                    continue  # not here; leave it for the location it belongs to
                 if exclude_re.search(j.title):
                     continue
                 tags = [n for n, rx in domain_title_re.items() if rx.search(j.title)]
@@ -470,11 +492,25 @@ def main() -> int:
                 j.domains = tags  # already in config (sort) order
                 candidates[j.job_id] = j
                 kept += 1
-            print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches", flush=True)
+            print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches"
+                  + (f", {off_area} outside {loc}" if off_area else ""), flush=True)
 
-        # 3-5. job page checks
+        # 3-5. job page checks: newest first (remote-looking first for remote_only),
+        # capped per location and by the overall time budget so the email always goes out.
+        queue = sorted(candidates.values(), key=lambda x: (
+            not (remote_only and re.search(r"remote|home ?office", f"{x.title} {x.location}", re.I)),
+            x.minutes_ago))
+        if len(queue) > max_checks:
+            print(f"[{label}] checking the newest {max_checks} of {len(queue)} candidates", flush=True)
+            queue = queue[:max_checks]
+            if label not in partial:
+                partial.append(label)
         accepted = []
-        for j in candidates.values():
+        for j in queue:
+            if out_of_time():
+                if label not in partial:
+                    partial.append(label)
+                break
             seen.add(j.job_id)
             stats["candidates"] += 1
             page = http_get(session, DETAIL_URL.format(j.job_id))
@@ -538,6 +574,9 @@ def main() -> int:
             row["domains"] = "; ".join(j.domains)
             row["requirements"] = "; ".join(j.requirements)
             w.writerow(row)
+    stats["partial"] = partial
+    if partial:
+        print(f"Partial results (time/volume limit): {partial}", flush=True)
     body = build_email_html(by_loc, when, round(seconds / 3600), stats)
     (out / f"internships-{stamp}.html").write_text(body, encoding="utf-8")
     print(f"Saved {len(all_jobs)} jobs to {out}/  stats={stats}")
