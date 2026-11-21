@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import json
 import os
 import random
 import re
@@ -76,11 +77,21 @@ class Job:
     minutes_ago: float = 10 ** 6
     start_date: str = ""
     requirements: list[str] = field(default_factory=list)
+    work_mode: str = ""      # "Remote" / "Hybrid" / ""
+    start_unknown: bool = False  # kept only because no start date is stated
+    location_label: str = ""
 
 
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
+_PACE = [1.0]  # multiplier on all polite delays; grows after HTTP 429, shrinks slowly after successes
+
+
+def pause(lo: float, hi: float) -> None:
+    time.sleep(random.uniform(lo, hi) * _PACE[0])
+
+
 def http_get(session: requests.Session, url: str, params: dict | None = None,
              retries: int = 6) -> str | None:
     for attempt in range(retries):
@@ -90,7 +101,11 @@ def http_get(session: requests.Session, url: str, params: dict | None = None,
             print(f"  network error: {e}", file=sys.stderr)
             r = None
         if r is not None and r.status_code == 200:
+            _PACE[0] = max(1.0, _PACE[0] * 0.97)
             return r.text
+        if r is not None and r.status_code == 429:
+            # Being throttled: slow every later request down instead of just retrying.
+            _PACE[0] = min(_PACE[0] * 1.5, 5.0)
         if r is not None and r.status_code in (400, 404, 410):
             return None
         code = r.status_code if r is not None else "n/a"
@@ -243,9 +258,13 @@ def build_query(role_terms: list[str], domain_terms: list[str], remote: bool) ->
 
 
 def search(session, location: str, keywords: str, seconds: int, max_pages: int,
-           label: str) -> list[Job]:
+           label: str, useful=None, stale_pages: int = 0) -> list[Job]:
+    """Page through one search. With `useful` and `stale_pages`, stop once that
+    many pages in a row add nothing useful (LinkedIn ranks the best matches
+    first; later pages are mostly full-time jobs that only mention the words)."""
     found: dict[str, Job] = {}
     start = 0
+    stale = 0
     for _ in range(max_pages):
         page = http_get(session, SEARCH_URL, {
             "keywords": keywords, "location": location,
@@ -261,8 +280,12 @@ def search(session, location: str, keywords: str, seconds: int, max_pages: int,
             found[j.job_id] = j
         if not new:
             break
+        if useful and stale_pages:
+            stale = 0 if any(useful(j) for j in new) else stale + 1
+            if stale >= stale_pages:
+                break
         start += len(jobs)  # LinkedIn returns ~10 per page
-        time.sleep(random.uniform(2, 4))
+        pause(2, 4)
     return list(found.values())
 
 
@@ -277,6 +300,7 @@ _EMAIL_CSS = (
     ".t{font-size:15px;font-weight:bold}"
     ".m{color:#555}"
     ".s{background:#fff3b0;padding:1px 6px;border-radius:3px;font-weight:bold}"
+    ".h{background:#d8f0dc;padding:1px 6px;border-radius:3px;font-weight:bold}"
     ".n{color:#999}"
     ".r{color:#a33}"
     "h3{border-bottom:1px solid #ccc;padding-bottom:4px}"
@@ -287,33 +311,23 @@ _EMAIL_CSS = (
 def _job_html(j: Job) -> str:
     e = html.escape
     meta = [e(j.company), e(j.location), e(j.employment_type)]
-    if j.remote:
-        meta.append("Remote")
     if j.posted_ago:
         meta.append(f"posted {e(j.posted_ago)}")
     meta.append(f"<i>{e(', '.join(j.domains) or 'Others')}</i>")
+    mode = f"<span class=h>🏠 {e(j.work_mode)}</span> " if j.work_mode else ""
     start = (f"<span class=s>📅 Start: {e(j.start_date)}</span>" if j.start_date
-             else "<span class=n>📅 Start: n/a</span>")
+             else "<span class=n>📅 Start: not stated</span>")
     reqs = ("<br><span class=r>⚠️ <b>Requirements:</b> " + " · ".join(e(r) for r in j.requirements) + "</span>"
             if j.requirements else "")
     link = f"https://www.linkedin.com/jobs/view/{j.job_id}"  # short form of the posting URL
     return (f"<li><a class=t href={link}>{e(j.title)}</a><br>"
-            f"<span class=m>{' · '.join(meta)}</span><br>{start}{reqs}</li>")
+            f"<span class=m>{' · '.join(meta)}</span><br>{mode}{start}{reqs}</li>")
 
 
-def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats: dict) -> str:
-    total = sum(len(v) for v in by_loc.values())
-    p = [
-        f"<html><head><meta charset=utf-8>{_EMAIL_CSS}</head><body><div class=w>",
-        f"<h2 style='margin-bottom:4px'>{total} internships / part-time / contract roles</h2>",
-        f"<p class=m style='margin-top:0'>Posted in the last {hours}h · {html.escape(when)}<br>"
-        "Sorted by location, then newest first, then domain.</p>",
-        "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in by_loc.items()) + "</p>",
-    ]
-    if stats.get("partial"):
-        p.append("<p class=r>⏱️ Very busy period: not every posting could be checked for "
-                 + html.escape(", ".join(stats["partial"])) + " (newest ones were checked first).</p>")
+def _job_list(p: list[str], by_loc: dict[str, list[Job]], empty_note: bool) -> None:
     for loc, jobs in by_loc.items():
+        if not jobs and not empty_note:
+            continue
         p.append(f"<h3>{html.escape(loc)} ({len(jobs)})</h3>")
         if not jobs:
             p.append("<p class=n>Nothing new.</p>")
@@ -321,12 +335,42 @@ def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats:
         p.append("<ul style='padding-left:18px'>")
         p.extend(_job_html(j) for j in jobs)  # already sorted: newest first, then domain
         p.append("</ul>")
+
+
+def build_email_html(by_loc: dict[str, list[Job]], when: str, hours: int, stats: dict,
+                     min_start: str) -> str:
+    main = {k: [j for j in v if not j.start_unknown] for k, v in by_loc.items()}
+    undated = {k: [j for j in v if j.start_unknown] for k, v in by_loc.items()}
+    n_main = sum(len(v) for v in main.values())
+    n_undated = sum(len(v) for v in undated.values())
+    p = [
+        f"<html><head><meta charset=utf-8>{_EMAIL_CSS}</head><body><div class=w>",
+        f"<h2 style='margin-bottom:4px'>{n_main} matching roles"
+        + (f" + {n_undated} with no start date" if n_undated else "") + "</h2>",
+        f"<p class=m style='margin-top:0'>Internship / part-time / contract · posted in the last {hours}h · "
+        f"{html.escape(when)}<br>Remote, hybrid, or starting {html.escape(min_start)} or later. "
+        "Sorted by location, then newest first, then domain.</p>",
+        "<p>" + " · ".join(f"{html.escape(k)}: <b>{len(v)}</b>" for k, v in main.items()) + "</p>",
+    ]
+    if stats.get("partial"):
+        p.append("<p class=r>⏱️ Very busy period: not every posting could be checked for "
+                 + html.escape(", ".join(stats["partial"])) + " (newest ones were checked first).</p>")
+    if stats.get("failed"):
+        p.append("<p class=r>❗ The search failed for " + html.escape(", ".join(stats["failed"]))
+                 + " this time, so its postings are missing from this email.</p>")
+    _job_list(p, main, empty_note=True)
+    if n_undated:
+        p.append("<h2 style='margin-top:28px'>Start date not stated (on-site)</h2>"
+                 "<p class=m style='margin-top:0'>Not remote or hybrid, and the posting gives no start "
+                 "date, so it might still start in time.</p>")
+        _job_list(p, undated, empty_note=False)
     p.append(
-        "<p class=n style='font-size:12px'>Start dates and requirements are read automatically from the "
-        "job description; check the posting before applying. Checked "
-        f"{stats.get('candidates', 0)} candidates; dropped {stats.get('wrong_type', 0)} full-time, "
-        f"{stats.get('too_senior', 0)} needing {stats.get('max_years')}+ years, "
-        f"{stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p></div></body></html>"
+        "<p class=n style='font-size:12px'>Start dates, work mode and requirements are read automatically "
+        f"from the job description; check the posting before applying. Checked {stats.get('candidates', 0)} "
+        f"candidates; dropped {stats.get('wrong_type', 0)} full-time, {stats.get('too_senior', 0)} needing "
+        f"{stats.get('max_years')}+ years, {stats.get('too_early', 0)} on-site starting before "
+        f"{html.escape(min_start)}, {stats.get('not_remote', 0)} not remote. Full list attached as CSV.</p>"
+        "</div></body></html>"
     )
     return "\n".join(p)
 
@@ -401,6 +445,213 @@ def send_email(subject: str, body_html: str, attachment: Path | None = None) -> 
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
+class Settings:
+    """Everything a location run needs, read once from config.yaml."""
+
+    def __init__(self, cfg: dict, seconds: int):
+        self.seconds = seconds
+        self.t_start = time.monotonic()
+        self.budget = float(cfg.get("max_run_minutes", 45)) * 60
+        self.max_checks = int(cfg.get("max_detail_checks_per_location", 300))
+        self.allowed_types = {t.lower() for t in cfg.get("allowed_employment_types", ["Internship"])}
+        self.max_years = int(cfg.get("max_years_experience", 5))
+        self.role_terms = cfg["role_search_terms"]
+        self.domains = cfg["domains"]
+        self.domain_title_re = {name: term_regex(d["title"]) for name, d in self.domains.items()}
+        self.order = list(self.domains)  # config order = email sort order; untagged jobs go last
+        self.exclude_re = term_regex(cfg.get("exclude_title_terms", []))
+        self.remote_re = term_regex(cfg.get("remote_description_terms", []))
+        self.max_pages = int(cfg.get("max_pages_per_search", 30))
+        self.stale_pages = int(cfg.get("stop_after_unproductive_pages", 0))
+        self.marker_re = (term_regex(cfg["role_title_markers"]) if cfg.get("role_title_markers")
+                          else INTERN_TITLE_RE)
+        self.weak_re = term_regex(cfg.get("role_title_markers_need_label", []))
+        self.check_unmarked = bool(cfg.get("check_titles_without_marker", False))
+        f = cfg.get("start_or_work_mode_filter") or {}
+        self.mode_filter = bool(f.get("enabled", False))
+        ms = str(f.get("min_start", "2027-03"))
+        self.min_start = (int(ms[:4]), int(ms[5:7]))
+        self.keep_undated = bool(f.get("keep_without_start_date", True))
+        self.min_start_label = datetime(self.min_start[0], self.min_start[1], 1).strftime("%B %Y")
+
+    def out_of_time(self) -> bool:
+        return time.monotonic() - self.t_start > self.budget
+
+    def domain_rank(self, job: Job) -> int:
+        return min((self.order.index(d) for d in job.domains if d in self.order), default=len(self.order))
+
+
+def run_location(session, st: Settings, loc_cfg: dict, seen: set[str], stats: dict,
+                 partial: list[str]) -> tuple[str, list[Job]]:
+    loc = loc_cfg["location"]
+    remote_only = bool(loc_cfg.get("remote_only", False))
+    label = f"{loc} (remote)" if remote_only else loc
+    # LinkedIn sometimes widens a city search to the whole country, so check
+    # the card's location really is in this place.
+    loc_re = term_regex(loc_cfg.get("must_contain") or [loc])
+
+    def title_tags(j: Job) -> list[str]:
+        if j.location and not loc_re.search(j.location):
+            return []
+        if st.exclude_re.search(j.title):
+            return []
+        return [n for n, rx in st.domain_title_re.items() if rx.search(j.title)]
+
+    def has_marker(j: Job) -> bool:
+        return bool(st.marker_re.search(j.title) or st.weak_re.search(j.title))
+
+    def useful(j: Job) -> bool:  # would this card become a candidate?
+        return bool(title_tags(j)) and (st.check_unmarked or has_marker(j))
+
+    # 1. search each domain, 2. title filter
+    candidates: dict[str, Job] = {}
+    for dname, d in st.domains.items():
+        if st.out_of_time():
+            partial.append(label)
+            break
+        q = build_query(st.role_terms, d["search"], remote_only)
+        results = search(session, loc, q, st.seconds, st.max_pages, label, useful, st.stale_pages)
+        kept = off_area = 0
+        for j in results:
+            if j.job_id in seen or j.job_id in candidates:
+                continue
+            if j.location and not loc_re.search(j.location):
+                off_area += 1
+                continue  # not here; leave it for the location it belongs to
+            tags = title_tags(j)
+            if not tags:
+                continue
+            if not st.check_unmarked and not has_marker(j):
+                seen.add(j.job_id)
+                stats["no_role_word"] += 1
+                continue
+            j.domains = tags  # already in config (sort) order
+            j.location_label = label
+            candidates[j.job_id] = j
+            kept += 1
+        print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches"
+              + (f", {off_area} outside {loc}" if off_area else ""), flush=True)
+
+    # 3-5. job page checks: newest first (remote-looking first for remote_only),
+    # capped per location and by the time budget so the email always goes out.
+    queue = sorted(candidates.values(), key=lambda x: (
+        not (remote_only and re.search(r"remote|home ?office", f"{x.title} {x.location}", re.I)),
+        x.minutes_ago))
+    if len(queue) > st.max_checks:
+        print(f"[{label}] checking the newest {st.max_checks} of {len(queue)} candidates", flush=True)
+        queue = queue[:st.max_checks]
+        if label not in partial:
+            partial.append(label)
+    today = datetime.now(timezone.utc).date()
+    accepted = []
+    for j in queue:
+        if st.out_of_time():
+            if label not in partial:
+                partial.append(label)
+            break
+        seen.add(j.job_id)
+        stats["candidates"] += 1
+        page = http_get(session, DETAIL_URL.format(j.job_id))
+        pause(1, 2.5)
+        if not page:
+            continue
+        criteria, desc = parse_detail(page)
+        j.employment_type = criteria.get("Employment type", "")
+        j.seniority = criteria.get("Seniority level", "")
+        etype = j.employment_type.lower()
+        if st.marker_re.search(j.title):
+            if etype not in st.allowed_types:
+                # Title says intern/Werkstudent/part-time; trust it over the label.
+                t = j.title.lower()
+                kind = ("Internship" if INTERN_TITLE_RE.search(t) else
+                        "Part-time" if re.search(r"part[- ]?time|teilzeit|deeltijd|temps partiel|minijob|aushilfe", t) else
+                        "Freelance" if "freelanc" in t else "Internship / part-time")
+                j.employment_type = f"{kind} (LinkedIn says {j.employment_type or 'n/a'})"
+        elif etype not in st.allowed_types:
+            stats["wrong_type"] += 1
+            continue
+        j.min_years = required_years(desc)
+        if j.min_years is not None and j.min_years >= st.max_years:
+            stats["too_senior"] += 1
+            continue
+        j.remote = is_remote(j, desc, st.remote_re)
+        if remote_only and not j.remote:
+            stats["not_remote"] += 1
+            continue
+        if j.remote:
+            j.work_mode = "Remote"
+        elif re.search(r"hybrid", f"{j.title} {j.location}", re.I) or extract.is_hybrid(desc):
+            j.work_mode = "Hybrid"
+        try:
+            j.start_date = extract.start_date(j.title, desc)
+        except Exception as e:  # never let a parsing edge case kill the run
+            print(f"  start-date parse failed for {j.job_id}: {e}", file=sys.stderr)
+        if st.mode_filter and not j.work_mode:
+            # On-site: keep only if it can start late enough (or doesn't say when).
+            try:
+                sm = extract.start_month(j.start_date, today)
+            except Exception:
+                sm = None
+            if sm is None:
+                if not st.keep_undated:
+                    stats["too_early"] += 1
+                    continue
+                j.start_unknown = True
+            elif sm < st.min_start:
+                stats["too_early"] += 1
+                continue
+        try:
+            j.requirements = extract.requirements(desc, _YEARS_RE, _EXP_WORDS)
+        except Exception as e:
+            print(f"  requirements parse failed for {j.job_id}: {e}", file=sys.stderr)
+        accepted.append(j)
+    # Same job posted twice under different IDs -> keep one.
+    uniq: dict[tuple, Job] = {}
+    for j in accepted:
+        key = (re.sub(r"\W+", " ", j.title.lower()).strip(), j.company.lower().strip())
+        uniq.setdefault(key, j)
+    accepted = sorted(uniq.values(), key=lambda x: (x.minutes_ago, st.domain_rank(x)))
+    print(f"[{label}] {len(candidates)} candidates -> {len(accepted)} kept", flush=True)
+    return label, accepted
+
+
+def location_label(loc_cfg: dict) -> str:
+    return f"{loc_cfg['location']} (remote)" if loc_cfg.get("remote_only") else loc_cfg["location"]
+
+
+def new_stats(max_years: int) -> dict:
+    return {"candidates": 0, "no_role_word": 0, "wrong_type": 0, "too_senior": 0,
+            "not_remote": 0, "too_early": 0, "max_years": max_years}
+
+
+def load_parts(folder: Path, locations: list[dict], stats: dict) -> tuple[dict[str, list[Job]], list[str]]:
+    """Merge the per-location JSON files written by parallel runs (--json)."""
+    parts = {}
+    for f in sorted(folder.rglob("*.json")):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        parts[d["label"]] = d
+    by_loc: dict[str, list[Job]] = {}
+    partial: list[str] = []
+    failed: list[str] = []
+    seen: set[str] = set()
+    for loc_cfg in locations:
+        label = location_label(loc_cfg)
+        d = parts.get(label)
+        if d is None:
+            failed.append(label)
+            by_loc[label] = []
+            continue
+        jobs = [Job(**j) for j in d["jobs"]]
+        by_loc[label] = [j for j in jobs if j.job_id not in seen]  # first location wins
+        seen.update(j.job_id for j in jobs)
+        partial.extend(d.get("partial", []))
+        for k, v in d.get("stats", {}).items():
+            if isinstance(v, int) and k != "max_years":
+                stats[k] = stats.get(k, 0) + v
+    stats["failed"] = failed
+    return by_loc, partial
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
@@ -410,6 +661,10 @@ def main() -> int:
                     help="only send a short test email (no LinkedIn search)")
     ap.add_argument("--only", help="comma-separated locations to run (for testing)")
     ap.add_argument("--hours", type=float, help="override the posting window, e.g. 17 to catch up after a missed run")
+    ap.add_argument("--json", help="write this run's jobs to a JSON file (used by parallel runs)")
+    ap.add_argument("--merge", help="don't search: merge the --json files in this folder and email them")
+    ap.add_argument("--list-locations", action="store_true",
+                    help="print the location names as JSON (honours --only) and exit")
     args = ap.parse_args()
 
     if args.test_email:
@@ -421,143 +676,36 @@ def main() -> int:
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     locations = cfg["locations"]
     if args.only:
-        keep = {x.strip().lower() for x in args.only.split(",")}
+        keep = {x.strip().lower() for x in args.only.split(",") if x.strip()}
         locations = [l for l in locations if l["location"].lower() in keep]
-    seconds = int(args.hours * 3600) if args.hours else int(cfg.get("posted_within_seconds", 43200))
-    t_start = time.monotonic()
-    budget = float(cfg.get("max_run_minutes", 100)) * 60
-    max_checks = int(cfg.get("max_detail_checks_per_location", 150))
-    partial: list[str] = []
+    if args.list_locations:
+        print(json.dumps([l["location"] for l in locations]))
+        return 0
+    seconds = int(args.hours * 3600) if args.hours else int(cfg.get("posted_within_seconds", 21600))
+    st = Settings(cfg, seconds)
+    stats = new_stats(st.max_years)
 
-    def out_of_time() -> bool:
-        return time.monotonic() - t_start > budget
-    allowed_types = {t.lower() for t in cfg.get("allowed_employment_types", ["Internship"])}
-    max_years = int(cfg.get("max_years_experience", 5))
-    role_terms = cfg["role_search_terms"]
-    domains = cfg["domains"]
-    domain_title_re = {name: term_regex(d["title"]) for name, d in domains.items()}
-    order = list(domains)  # config order = email sort order; untagged jobs go last ("Others")
-
-    def domain_rank(job: Job) -> int:
-        return min((order.index(d) for d in job.domains if d in order), default=len(order))
-    exclude_re = term_regex(cfg.get("exclude_title_terms", []))
-    remote_re = term_regex(cfg.get("remote_description_terms", []))
-    max_pages = int(cfg.get("max_pages_per_search", 30))
-    marker_re = term_regex(cfg.get("role_title_markers", [])) if cfg.get("role_title_markers") else INTERN_TITLE_RE
-    weak_re = term_regex(cfg.get("role_title_markers_need_label", []))
-    check_unmarked = bool(cfg.get("check_titles_without_marker", False))
-
-    session = requests.Session()
-    stats = {"candidates": 0, "no_role_word": 0, "wrong_type": 0, "too_senior": 0,
-             "not_remote": 0, "max_years": max_years}
-    seen: set[str] = set()
-    by_loc: dict[str, list[Job]] = {}
-
-    for loc_cfg in locations:
-        loc = loc_cfg["location"]
-        remote_only = bool(loc_cfg.get("remote_only", False))
-        label = f"{loc} (remote)" if remote_only else loc
-        # LinkedIn sometimes widens a city search to the whole country, so check
-        # the card's location really is in this place.
-        loc_re = term_regex(loc_cfg.get("must_contain") or [loc])
-        by_loc[label] = []
-
-        # 1. search each domain, 2. title filter
-        candidates: dict[str, Job] = {}
-        for dname, d in domains.items():
-            if out_of_time():
-                partial.append(label)
-                break
-            q = build_query(role_terms, d["search"], remote_only)
-            results = search(session, loc, q, seconds, max_pages, label)
-            kept = 0
-            off_area = 0
-            for j in results:
-                if j.job_id in seen:
-                    continue
-                if j.location and not loc_re.search(j.location):
-                    off_area += 1
-                    continue  # not here; leave it for the location it belongs to
-                if exclude_re.search(j.title):
-                    continue
-                tags = [n for n, rx in domain_title_re.items() if rx.search(j.title)]
-                if not tags:
-                    continue
-                if j.job_id in candidates:
-                    continue
-                if not check_unmarked and not (marker_re.search(j.title) or weak_re.search(j.title)):
-                    seen.add(j.job_id)
-                    stats["no_role_word"] += 1
-                    continue
-                j.domains = tags  # already in config (sort) order
-                candidates[j.job_id] = j
-                kept += 1
-            print(f"[{label}] {dname}: {len(results)} results, {kept} new title matches"
-                  + (f", {off_area} outside {loc}" if off_area else ""), flush=True)
-
-        # 3-5. job page checks: newest first (remote-looking first for remote_only),
-        # capped per location and by the overall time budget so the email always goes out.
-        queue = sorted(candidates.values(), key=lambda x: (
-            not (remote_only and re.search(r"remote|home ?office", f"{x.title} {x.location}", re.I)),
-            x.minutes_ago))
-        if len(queue) > max_checks:
-            print(f"[{label}] checking the newest {max_checks} of {len(queue)} candidates", flush=True)
-            queue = queue[:max_checks]
-            if label not in partial:
-                partial.append(label)
-        accepted = []
-        for j in queue:
-            if out_of_time():
-                if label not in partial:
-                    partial.append(label)
-                break
-            seen.add(j.job_id)
-            stats["candidates"] += 1
-            page = http_get(session, DETAIL_URL.format(j.job_id))
-            time.sleep(random.uniform(1, 2.5))
-            if not page:
-                continue
-            criteria, desc = parse_detail(page)
-            j.employment_type = criteria.get("Employment type", "")
-            j.seniority = criteria.get("Seniority level", "")
-            etype = j.employment_type.lower()
-            if marker_re.search(j.title):
-                if etype not in allowed_types:
-                    # Title says intern/Werkstudent/part-time; trust it over the label.
-                    t = j.title.lower()
-                    kind = ("Internship" if INTERN_TITLE_RE.search(t) else
-                            "Part-time" if re.search(r"part[- ]?time|teilzeit|deeltijd|temps partiel|minijob|aushilfe", t) else
-                            "Freelance" if "freelanc" in t else "Internship / part-time")
-                    j.employment_type = f"{kind} (LinkedIn says {j.employment_type or 'n/a'})"
-            elif etype not in allowed_types:
-                stats["wrong_type"] += 1
-                continue
-            j.min_years = required_years(desc)
-            if j.min_years is not None and j.min_years >= max_years:
-                stats["too_senior"] += 1
-                continue
-            j.remote = is_remote(j, desc, remote_re)
-            if remote_only and not j.remote:
-                stats["not_remote"] += 1
-                continue
-            try:
-                j.start_date = extract.start_date(j.title, desc)
-            except Exception as e:  # never let a parsing edge case kill the run
-                print(f"  start-date parse failed for {j.job_id}: {e}", file=sys.stderr)
-            try:
-                j.requirements = extract.requirements(desc, _YEARS_RE, _EXP_WORDS)
-            except Exception as e:
-                print(f"  requirements parse failed for {j.job_id}: {e}", file=sys.stderr)
-            accepted.append(j)
-        # Same job posted twice under different IDs -> keep one.
-        uniq: dict[tuple, Job] = {}
-        for j in accepted:
-            key = (re.sub(r"\W+", " ", j.title.lower()).strip(), j.company.lower().strip())
-            uniq.setdefault(key, j)
-        accepted = list(uniq.values())
-        accepted.sort(key=lambda x: (x.minutes_ago, domain_rank(x)))
-        by_loc[label] = accepted
-        print(f"[{label}] {len(candidates)} candidates -> {len(accepted)} kept", flush=True)
+    if args.merge:
+        by_loc, partial = load_parts(Path(args.merge), locations, stats)
+    else:
+        session = requests.Session()
+        seen: set[str] = set()
+        partial = []
+        by_loc = {}
+        for loc_cfg in locations:
+            label, jobs = run_location(session, st, loc_cfg, seen, stats, partial)
+            by_loc[label] = jobs
+        if args.json:
+            if len(by_loc) != 1:
+                raise SystemExit("--json needs exactly one location (use --only)")
+            for label, jobs in by_loc.items():
+                Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.json).write_text(json.dumps({
+                    "label": label, "jobs": [asdict(j) for j in jobs],
+                    "partial": [x for x in partial if x == label], "stats": stats,
+                }, ensure_ascii=False), encoding="utf-8")
+            print(f"Wrote {args.json}  stats={stats}", flush=True)
+            return 0
 
     now = datetime.now(timezone.utc)
     when = now.strftime("%Y-%m-%d %H:%M UTC")
@@ -577,13 +725,14 @@ def main() -> int:
     stats["partial"] = partial
     if partial:
         print(f"Partial results (time/volume limit): {partial}", flush=True)
-    body = build_email_html(by_loc, when, round(seconds / 3600), stats)
+    body = build_email_html(by_loc, when, round(seconds / 3600), stats, st.min_start_label)
     (out / f"internships-{stamp}.html").write_text(body, encoding="utf-8")
     print(f"Saved {len(all_jobs)} jobs to {out}/  stats={stats}")
 
     if not args.no_email:
         prefix = f"[Preview: {args.only}] " if args.only else ""
-        send_email(f"{prefix}{len(all_jobs)} new internships & part-time roles ({when})", body,
+        n_main = sum(1 for j in all_jobs if not j.start_unknown)
+        send_email(f"{prefix}{n_main} new internships & part-time roles ({when})", body,
                    attachment=csv_path)
         print("Email sent.")
     return 0

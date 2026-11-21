@@ -271,3 +271,66 @@ def requirements(description: str, years_re: re.Pattern, exp_words: re.Pattern) 
     if pm:
         reqs.append("Work permit: " + _snippet(description, pm))
     return reqs
+
+
+# --------------------------------------------------------------------------
+# Start date -> comparable month
+# --------------------------------------------------------------------------
+_SEASON_MONTH = {
+    "spring": 3, "printemps": 3, "frühjahr": 3,
+    "summer": 6, "été": 6, "sommer": 6,
+    "autumn": 9, "fall": 9, "automne": 9, "herbst": 9,
+}
+
+
+def _infer_year(month: int, today) -> int:
+    """A month with no year: this year if it's about now or later, else next year."""
+    return today.year if month >= today.month - 1 else today.year + 1
+
+
+def start_month(start: str, today) -> tuple[int, int] | None:
+    """Latest (year, month) the stated start could mean; None if no usable date.
+
+    '1 March 2027' -> (2027, 3); 'September' (asked in Nov 2026) -> (2027, 9);
+    'H1 (Jan-Jun) 2027' -> (2027, 6); 'ASAP' -> today's month.
+    """
+    if not start:
+        return None
+    main = start.replace("/ ASAP", "").strip()
+    if not main or main == "ASAP":
+        return (today.year, today.month)
+    year_m = re.search(r"\b20\d\d\b", main)
+    year = int(year_m.group()) if year_m else None
+    half = re.match(r"H([12])\b", main)
+    if half:
+        mo = 6 if half.group(1) == "1" else 12
+        return (year or _infer_year(mo, today), mo)
+    season = re.search(r"\b(" + "|".join(_SEASON_MONTH) + r")\b", main, re.I)
+    if season:
+        mo = _SEASON_MONTH[season.group(1).lower()]
+        return (year or _infer_year(mo, today), mo)
+    for i, name in enumerate(_EN_MONTHS):
+        if re.search(rf"\b{name}\b", main, re.I):
+            return (year or _infer_year(i + 1, today), i + 1)
+    return None
+
+
+# --------------------------------------------------------------------------
+# Hybrid work
+# --------------------------------------------------------------------------
+_HYBRID_RE = re.compile(
+    r"\bhybrid(?:e)?\b\s*(?:\(|-|:)?\s*(?:work|working|model|mode|role|position|set-?up|arrangement|policy|"
+    r"schedule|organi[sz]ation|arbeiten|arbeitsmodell|werken|de\s+travail|job|opportunity|environment|"
+    r"remote|on-?site|office)"
+    r"|\b(?:travail|mode|modèle|organisation|poste|rythme)\s+(?:de\s+travail\s+)?(?:en\s+)?hybride"
+    r"|\b(?:hybrid|hybride)\s*$"
+    r"|t[ée]l[ée]\s?travail|home\s?office|mobile[sn]?\s+arbeiten|mobiles\s+arbeiten|thuiswerk|"
+    r"work(?:ing)?\s+from\s+home|remote\s+(?:days?|work|working|possible|option)|flexible\s+working|"
+    r"\d\s*(?:days?|jours?|tage|dagen)\s+(?:of\s+|de\s+|per\s+week\s+|par\s+semaine\s+)?"
+    r"(?:remote|t[ée]l[ée]travail|home\s?office|thuis)",
+    re.I | re.M,
+)
+
+
+def is_hybrid(text: str) -> bool:
+    return bool(_HYBRID_RE.search(text or ""))

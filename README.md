@@ -1,9 +1,12 @@
 # LinkedIn Internship Agent
 
-Twice a day (started at **5:35 AM and 5:35 PM IST**, email ~40-60 min later) emails you new LinkedIn roles posted in the
-**last 12 hours** that are:
+Four times a day (emails around **3 AM, 9 AM, 3 PM and 9 PM IST**) emails you new
+LinkedIn roles posted in the **last 6 hours** that are:
 
 - **Internship, part-time or contract** (LinkedIn's "Employment type", checked on each job page)
+- **Remote, hybrid, or starting March 2027 or later** (read from the job description).
+  On-site roles that don't state a start date are listed in a separate
+  "Start date not stated" section at the end of the email.
 - **Not requiring 5+ years of experience** (read from the job description, EN/FR/DE/NL)
 - In these **domains** (job title must match): Supply Chain & Operations, Data &
   Analytics, Product Management, Project Management, Strategy & Consulting,
@@ -12,10 +15,13 @@ Twice a day (started at **5:35 AM and 5:35 PM IST**, email ~40-60 min later) ema
   Switzerland (all roles) and Germany (remote roles only)
 
 Each email is sorted by **location** (order above), then **newest posting first**,
-then **domain** (order above). Every job shows a highlighted **📅 start date** and
-**⚠️ mandatory requirements** (languages and level, degree such as Bac+5, years of
-experience, enrolment / convention de stage, work permit), read from the job
-description.
+then **domain** (order above). Every job shows a highlighted **🏠 Remote / Hybrid**
+badge, **📅 start date** and **⚠️ mandatory requirements** (languages and level,
+degree such as Bac+5, years of experience, enrolment / convention de stage, work
+permit), read from the job description.
+
+Each location is searched in its own parallel GitHub job; a final job merges
+them into one email.
 
 It uses LinkedIn's public (logged-out) job pages; no LinkedIn account or API key.
 LinkedIn ignores its own experience-level, job-type and remote filters for
@@ -41,11 +47,12 @@ Each run's CSV and HTML are also kept as a workflow artifact for 30 days.
 - `locations`: any LinkedIn location (their order = email order); `remote_only: true` keeps only remote roles
 - `allowed_employment_types`: e.g. add `Temporary`
 - `max_years_experience`: drop jobs requiring this many years or more
+- `start_or_work_mode_filter`: the remote / hybrid / start-date rule (`enabled: false` turns it off)
 - `domains`: search terms and title words per domain (their order = email sort order)
 - `exclude_title_terms`: titles to always drop (Senior, Director, driver, …)
 - Schedule: runs are started by a Claude scheduled task ("LinkedIn internship digest",
   manage it in the Claude app). If you change its times, set `posted_within_seconds`
-  to the gap between runs.
+  to the gap between runs (21600 = 6 hours).
 
 ## Run locally
 

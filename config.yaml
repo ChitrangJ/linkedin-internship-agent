@@ -23,9 +23,17 @@ locations:
   - location: Germany
     remote_only: true
     must_contain: [Germany, Deutschland, Remote]
-# Only jobs posted in this many seconds. 43200 = 12 hours, matching the
-# twice-a-day schedule so the two emails don't repeat jobs.
-posted_within_seconds: 43200
+# Only jobs posted in this many seconds. 21600 = 6 hours, matching the
+# four-a-day schedule so emails don't repeat jobs.
+posted_within_seconds: 21600
+
+# Keep a job only if it is remote, hybrid, or can start on/after min_start.
+# On-site jobs whose description states no start date are kept (in a separate
+# "start date not stated" section) when keep_without_start_date is true.
+start_or_work_mode_filter:
+  enabled: true
+  min_start: 2027-03
+  keep_without_start_date: true
 
 # Keep only these LinkedIn "Employment type" values (checked on each job page).
 # Other values LinkedIn uses: Full-time, Temporary, Volunteer, Other.
@@ -228,11 +236,14 @@ remote_description_terms:
   - ortsunabhängig
   - mobiles arbeiten
 
-# Safety caps per search
+# Safety caps per search. A search stops early once this many pages in a row
+# add no usable job (later pages are mostly full-time jobs that only mention
+# the words); 0 = always read up to max_pages_per_search.
 max_pages_per_search: 30
+stop_after_unproductive_pages: 4
 
-# Time/volume limits so the email always goes out (GitHub stops a run at 120 min).
-# When hit, the newest postings are checked first and the email says which
-# locations were only partly checked.
-max_run_minutes: 100
-max_detail_checks_per_location: 150
+# Time/volume limits per location (each location runs as its own parallel
+# GitHub job, stopped by GitHub at 60 min). When hit, the newest postings are
+# checked first and the email says which locations were only partly checked.
+max_run_minutes: 40
+max_detail_checks_per_location: 300

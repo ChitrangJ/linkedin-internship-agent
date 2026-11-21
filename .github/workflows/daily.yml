@@ -1,8 +1,9 @@
 name: Daily LinkedIn internships
 
 on:
-  # Started at 05:35 and 17:35 IST by a Claude scheduled task (GitHub's own
-  # schedule ran 6-8 hours late). You can also run it from the Actions tab.
+  # Started 4 times a day (for emails at ~3 AM, 9 AM, 3 PM and 9 PM IST) by a
+  # Claude scheduled task (GitHub's own schedule ran hours late). You can also
+  # run it from the Actions tab.
   workflow_dispatch:
     inputs:
       test_email:
@@ -10,7 +11,7 @@ on:
         type: boolean
         default: false
       hours:
-        description: "Catch-up: look back this many hours instead of 12 (e.g. 17). Empty = default"
+        description: "Catch-up: look back this many hours instead of 6 (e.g. 12). Empty = default"
         type: string
         default: ""
       only:
@@ -19,27 +20,94 @@ on:
         default: ""
 
 jobs:
-  run:
+  # 1. List the locations from config.yaml
+  plan:
+    if: ${{ !inputs.test_email }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    outputs:
+      locations: ${{ steps.list.outputs.locations }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Fetch internships and email digest
+      - id: list
+        env:
+          ONLY: ${{ inputs.only }}
+        run: echo "locations=$(python agent.py --list-locations ${ONLY:+--only "$ONLY"})" >> "$GITHUB_OUTPUT"
+
+  # 2. Search every location in parallel (separate machines, so LinkedIn
+  #    throttles less and no single job gets near GitHub's time limit)
+  search:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        location: ${{ fromJSON(needs.plan.outputs.locations) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Search ${{ matrix.location }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          LOC: ${{ matrix.location }}
+          HOURS: ${{ inputs.hours }}
+        run: python agent.py --only "$LOC" --json "parts/$LOC.json" --no-email ${HOURS:+--hours "$HOURS"}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ strategy.job-index }}
+          path: parts/
+          retention-days: 3
+
+  # 3. Merge all locations into one email (runs even if a location failed)
+  email:
+    needs: search
+    if: ${{ always() && !inputs.test_email }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          path: parts/
+          merge-multiple: true
+      - name: Email digest
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          PYTHONUNBUFFERED: "1"
           ONLY: ${{ inputs.only }}
           HOURS: ${{ inputs.hours }}
-        run: python agent.py ${{ inputs.test_email && '--test-email' || '' }} ${{ inputs.only && '--only "$ONLY"' || '' }} ${{ inputs.hours && '--hours "$HOURS"' || '' }}
+        run: mkdir -p parts && python agent.py --merge parts ${ONLY:+--only "$ONLY"} ${HOURS:+--hours "$HOURS"}
       - uses: actions/upload-artifact@v4
-        if: always() && !inputs.test_email
+        if: always()
         with:
           name: internships
           path: output/
           retention-days: 30
+
+  test-email:
+    if: ${{ inputs.test_email }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python agent.py --test-email
